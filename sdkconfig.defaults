@@ -14,6 +14,7 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # --- 控制台:USB-Serial-JTAG(C3 原生 USB,GPIO18/19)---
 # 不用 UART0:其默认 TX=GPIO21 与本板背光引脚冲突。
+# 足球看板的配网命令(wifi set / board ...)就跑在这个控制台上。
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
@@ -24,21 +25,50 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_DEF_REFR_PERIOD=20
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+# 不编 LVGL 自带的 examples:看板界面是自己画的,examples 只会白占 flash
+# 和编译时间(默认值是 y,这里显式关掉)。
+CONFIG_LV_BUILD_EXAMPLES=n
+CONFIG_LV_USE_DEMO_WIDGETS=n
+# 保留缺字占位符:字体子集漏字时在屏上表现为可见方框,便于现场发现,
+# 而不是变成一片空白。覆盖率由 tools/check_fonts.py 在提交前拦截。
+CONFIG_LV_USE_FONT_PLACEHOLDER=y
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 本 demo UI 简单,24KB 足够;若自建复杂界面出现绘制卡死/看门狗,调大此值。
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# 24 KB 曾经够用,直到密码页把 42 个键做成"面板 + 标签"两层对象:一个页面 87 个
+# 对象、260 多个局部样式属性,24 KB 池在 TLS 握手的碎片背景下会分配失败。
+# LVGL 分配失败不是返回 NULL 而是断言(LV_USE_ASSERT_MALLOC=y),默认断言处理是
+# while(1),表现就是整屏卡死、按键全无响应。40 KB 留出余量。
+CONFIG_LV_MEM_SIZE_KILOBYTES=40
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
-# --- Bluetooth LE / NimBLE ---
-# ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
-CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# --- 联网与 TLS ---
+# HTTPS 证书校验用 IDF 内置根证书包;不校验证书的"省内存"做法不可接受。
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# TLS 入站记录缓冲。这个值必须 ≥ 服务端单条 TLS 记录的最大长度,不是"证书链有多大"。
+# 实测懂球帝(nginx)一次 1.6 MB 的响应按 16,401 字节的记录下发——16,384 明文 + 17 字节
+# TLS 1.3 开销,和 nginx 默认 ssl_buffer_size 16k 一致。把它调到 8 KB 会让 mbedtls 在
+# 收到第 8 条记录时直接判 INVALID_RECORD:握手成功、HTTP 200 拿到、读到一半失败,
+# 表现就是"Wi-Fi 连上了、IP 也有、主页一直刷不出来"。所以保持默认 16 KB。
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+
+# --- Wi-Fi 缓冲 ---
+# 默认 10/32/32 是按"高吞吐 STA"配的。看板一次只拉一份 JSON,峰值吞吐远低于
+# 这个档位,把收发缓冲降下来:静态接收缓冲 10 → 6(IDF 建议的下限),动态收发
+# 各 32 → 10。动态缓冲是运行时从堆里按帧申请的(每条约 1.6 KB),32+32 就是
+# 一百多 KB 的堆开销,而且把堆切得很碎——详情页要一块 20 KB 连续内存时就会
+# 撞上"总量够、最大块不够"。10+10 配合 4 KB 的 TCP 窗口足够跑满链路。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=10
+
+# --- lwIP ---
+# TCP 收发窗口默认 5760 字节/连接。局域网 RTT 只有几毫秒,4096 的窗口已经能跑满
+# 几十 KB/s,而一次 1.6 MB 的响应仍然只要几秒。
+CONFIG_LWIP_TCP_WND_DEFAULT=4096
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=4096
+
+# --- 蓝牙 ---
+# 看板不提供 BLE 服务(配网走 USB 串口命令),关掉可以给 Wi-Fi + TLS 让出
+# 几十 KB 内部 RAM。基线 demo_ble.c 仍留在仓库,但不再编进本应用。
+CONFIG_BT_ENABLED=n

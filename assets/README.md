@@ -17,6 +17,41 @@ Store reusable font files and generated font sources in `fonts/`.
 - Check Flash and internal-RAM impact before adding a font; the ESP32-C3 has no PSRAM.
 - Do not commit fonts whose license does not permit redistribution.
 
+### Football live board font subset
+
+The `feature/football-live-board` application ships four generated LVGL fonts.
+They are produced from **Noto Sans CJK SC Regular** (Source Han Sans, SIL Open
+Font License 1.1) with [`lv_font_conv`](https://github.com/lvgl/lv_font_conv)
+1.5.3, 4 bpp, no compression, no kerning.
+
+| File | Size | Coverage | Used for |
+| --- | --- | --- | --- |
+| `fonts/app_font_12.c` | 12 px | ASCII, Latin-1, Latin Extended-A where the source font has it, GB2312 plus every extra CJK character seen in the live feed | league names, match state, footer |
+| `fonts/app_font_15.c` | 15 px | same as above | team names, settings rows, battery |
+| `fonts/app_font_19.c` | 19 px | ASCII, Latin-1 and the characters used by static UI text | header title |
+| `fonts/app_font_22.c` | 22 px | `0-9`, `-`, `v`, `s` | score |
+| `fonts/football_ui_chars.txt` | — | the full inventory used by the 12/15 px fonts | regeneration and coverage gate |
+| `fonts/title_chars.txt` | — | the inventory used by the 19 px font | regeneration and coverage gate |
+| `fonts/data_chars.txt` | — | CJK characters observed in a real `match_list` response | keeps rare club and league characters in the subset |
+
+- The full inventory is the union of three sources: string literals in the
+  application sources (`main/main.c` and `main/app_*.c`), the whole GB2312
+  repertoire, and `data_chars.txt`. Re-run `tools/gen_fonts.py` after changing
+  UI text; pass `--data-json <captured response>` to refresh `data_chars.txt`
+  from a new capture.
+- `tools/check_fonts.py` (part of `tools/validate.sh --static`) fails the gate
+  when an inventory is stale or a generated font misses a required code point.
+- Characters outside the subset degrade to `?` through
+  `app_fonts_sanitize()` instead of rendering as an empty box. This is a
+  deliberate, documented fallback: the only case in the current feed is one
+  club name written in Turkish, and no Noto Sans CJK release carries that
+  glyph.
+- The source OTF (~16 MB) is deliberately not committed;
+  `assets/fonts/source/` is git-ignored. Download it from
+  `https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf`
+  and pass it with `--font`; the license is OFL-1.1, which permits
+  redistribution of the generated bitmaps.
+
 ## Images
 
 Store reusable source images and generated display assets in `images/`.

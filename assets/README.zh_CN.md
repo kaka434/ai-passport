@@ -15,6 +15,36 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+### 足球看板字体子集
+
+`feature/football-live-board` 应用带四套生成的 LVGL 字体，均来自
+**思源黑体 Noto Sans CJK SC Regular**（SIL Open Font License 1.1），
+用 [`lv_font_conv`](https://github.com/lvgl/lv_font_conv) 1.5.3 生成，
+4 bpp、不压缩、不做字距调整。
+
+| 文件 | 字号 | 覆盖范围 | 用途 |
+| --- | --- | --- | --- |
+| `fonts/app_font_12.c` | 12 px | ASCII、Latin-1、源字体具备的 Latin Extended-A、GB2312 全集，以及比分数据里出现的其它汉字 | 联赛名、比赛状态、页脚 |
+| `fonts/app_font_15.c` | 15 px | 同上 | 队名、设置项、电量 |
+| `fonts/app_font_19.c` | 19 px | ASCII、Latin-1，以及界面静态文案用到的字 | 页头标题 |
+| `fonts/app_font_22.c` | 22 px | `0-9`、`-`、`v`、`s` | 比分 |
+| `fonts/football_ui_chars.txt` | — | 12/15 px 用的完整清单 | 重新生成与覆盖校验的输入 |
+| `fonts/title_chars.txt` | — | 19 px 用的清单 | 重新生成与覆盖校验的输入 |
+| `fonts/data_chars.txt` | — | 从真实 `match_list` 响应里扫出的汉字 | 让冷门球队/联赛名不缺字 |
+
+- 完整清单由三部分并起来：`main/main.c` 与 `main/app_*.c` 里的字符串字面量、
+  GB2312 全集、`data_chars.txt`。改动界面文案后重跑 `tools/gen_fonts.py`；
+  加 `--data-json <抓包文件>` 可以从新的响应刷新 `data_chars.txt`。
+- `tools/check_fonts.py`（已接入 `tools/validate.sh --static`）会在清单过期或
+  生成字体缺字时让校验失败。
+- 子集之外的字符由 `app_fonts_sanitize()` 显示成 `?`，而不是空心方框。这是
+  明确的降级策略：当前数据里唯一命中的是一条土耳其语写法的队名，而任何一版
+  思源黑体都没有那个字形。
+- 约 16 MB 的源 OTF 不提交到仓库（`assets/fonts/source/` 已在 .gitignore 里）。
+  需要时从
+  `https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf`
+  下载并用 `--font` 传入；OFL-1.1 允许分发生成后的位图。
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。
