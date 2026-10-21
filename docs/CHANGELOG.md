@@ -10,6 +10,35 @@
 > with `CHANGELOG.zh_CN.md`. The entries currently under `Unreleased` are pending
 > review for the next release; they are not a finalized release history.
 
+## Football Live Board v0.1.0 — 2026-10-21
+
+First release of the football live score board, developed on the
+`feature/football-live-board` branch.
+
+- Added a live score board that pulls today's matches over Wi-Fi from the public
+  Dongqiudi feed: live matches first, then today's fixtures, then today's finished
+  matches, capped at 24 rows, filtered to seven competitions (Premier League, La
+  Liga, Serie A, Bundesliga, Ligue 1, Chinese Super League, China League One).
+- Added single-match detail with a goal timeline (home left, away right, minute in
+  the middle, penalties and own goals marked), formation and eight statistics.
+  A match that has not started reads "Match not started" instead of an error.
+- Added provisioning without a computer: scan for an SSID and type the password on
+  a 6x7 on-screen keyboard, or let the device host an access point and fill a phone
+  web page. Working networks are stored in NVS with basic validation.
+- Added explicit empty states: when today has no match the board jumps to the
+  nearest match day and pins an amber countdown banner; when nothing is scheduled
+  within seven days it says so instead of showing a blank list.
+- Made every network response streaming, because the C3 has no PSRAM: the list
+  response is 1.6 MB and the largest match detail is 37.9 KB while free heap at
+  runtime is about 25 KB. Fixed a detail-page parse failure that showed an error
+  for every match that had not started, caused by the API returning an empty array
+  where the parser only accepted an object.
+- Added serial console commands `wifi set/status/clear` and
+  `board interval/refresh/detail`, a 60/120/300-second auto-refresh, and a backlight
+  dim to 18% after two idle minutes.
+- Sized TLS, Wi-Fi, lwIP and the LVGL pool from measured values on this board, with
+  the measurements recorded in `docs/reference/kaka/`.
+
 ## Unreleased
 
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
