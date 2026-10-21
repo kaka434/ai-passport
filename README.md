@@ -35,6 +35,18 @@ The upstream project overview is [`docs/README.md`](docs/README.md).
   response is 37.9 KB, so both are streamed through a 1 KB window and leave about
   25 KB of free heap at runtime.
 
+## Photos
+
+The device is an ESP32-C3 replica board with an ST7789P3 240x320 portrait panel and
+three keys on one ADC, inside FoloToy's transparent case. The three photos were taken
+on 2026-10-21, when only one La Liga match existed that day (Levante vs Athletic
+Bilbao, 02:00), which happens to show three states at once: jumping to the next match
+day, a not-yet-started detail page, and the settings screen.
+
+| Scores (jumps to the next match day) | Detail · not started | Settings |
+| :---: | :---: | :---: |
+| ![Scores](docs/assets/football-live-board-scores.jpg) | ![Detail](docs/assets/football-live-board-detail.jpg) | ![Settings](docs/assets/football-live-board-settings.jpg) |
+
 ## Hardware and prerequisites
 
 - ESP32-C3 replica board, 8 MB flash, ST7789P3 240×320 portrait panel, three keys on

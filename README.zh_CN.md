@@ -29,6 +29,16 @@
 - **省内存优先**：无 PSRAM。列表响应 1.6 MB、详情响应最大 37.9 KB，全部走流式解析，
   峰值只吃 1 KB 窗口，运行时空闲堆仍有约 25 KB。
 
+## 实物照片
+
+设备是 ESP32-C3 复刻板 + ST7789P3 240×320 竖屏 + 三键 ADC，装在 FoloToy 的透明挂件壳里。
+三张照片拍于 2026-10-21，当天七大联赛里只有一场西甲（莱万特 vs 毕尔巴鄂竞技，02:00 开赛），
+正好把「跳转到下一个比赛日」「未开赛详情」「设置页」三种状态都拍到了。
+
+| 比分页（自动跳到下一个比赛日） | 详情页 · 未开赛 | 设置页 |
+| :---: | :---: | :---: |
+| ![比分页](docs/assets/football-live-board-scores.jpg) | ![详情页](docs/assets/football-live-board-detail.jpg) | ![设置页](docs/assets/football-live-board-settings.jpg) |
+
 ## 硬件与前提
 
 - ESP32-C3 复刻板，8 MB Flash，ST7789P3 240×320 竖屏，三个按键走 ADC。
