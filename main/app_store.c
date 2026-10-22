@@ -14,6 +14,8 @@ static const char *TAG = "app_store";
 #define KEY_SSID "ssid"
 #define KEY_PASS "pass"
 #define KEY_INTERVAL "interval"
+#define KEY_SCREEN_OFF "screen_off"
+#define KEY_BRIGHT "bright"
 #define KEY_KNOWN "known"
 
 // "连过的网络"整份存成一个 blob:最多 5 条,一条 98 字节,总共不到 500 字节,
@@ -53,9 +55,19 @@ esp_err_t app_store_load(app_config_t *cfg) {
     if (nvs_get_u16(handle, KEY_INTERVAL, &value) == ESP_OK) {
         cfg->refresh_seconds = app_config_clamp_refresh(value);
     }
+    // 老固件没有这两个键:nvs_get 失败就保留 app_config_defaults() 给的值。
+    if (nvs_get_u16(handle, KEY_SCREEN_OFF, &value) == ESP_OK) {
+        cfg->screen_off_seconds = app_config_clamp_screen_off(value);
+    }
+    uint8_t bright = 0;
+    if (nvs_get_u8(handle, KEY_BRIGHT, &bright) == ESP_OK) {
+        cfg->brightness_percent = app_config_clamp_brightness(bright);
+    }
 
     nvs_close(handle);
-    ESP_LOGI(TAG, "配置已读取:间隔=%us 配网=%s", (unsigned)cfg->refresh_seconds,
+    ESP_LOGI(TAG, "配置已读取:间隔=%us 息屏=%us 亮度=%u%% 配网=%s",
+             (unsigned)cfg->refresh_seconds, (unsigned)cfg->screen_off_seconds,
+             (unsigned)cfg->brightness_percent,
              app_config_has_credentials(cfg) ? "有" : "无");
     return app_config_has_credentials(cfg) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
@@ -70,6 +82,8 @@ esp_err_t app_store_save(const app_config_t *cfg) {
     err = nvs_set_str(handle, KEY_SSID, cfg->ssid);
     if (err == ESP_OK) err = nvs_set_str(handle, KEY_PASS, cfg->pass);
     if (err == ESP_OK) err = nvs_set_u16(handle, KEY_INTERVAL, cfg->refresh_seconds);
+    if (err == ESP_OK) err = nvs_set_u16(handle, KEY_SCREEN_OFF, cfg->screen_off_seconds);
+    if (err == ESP_OK) err = nvs_set_u8(handle, KEY_BRIGHT, cfg->brightness_percent);
     if (err == ESP_OK) err = nvs_commit(handle);
 
     nvs_close(handle);

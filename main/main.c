@@ -43,6 +43,43 @@ static SemaphoreHandle_t s_config_lock;
 static app_config_t s_config;
 static volatile bool s_input_ready;
 
+// ---------------------------------------------------------------- 息屏与亮度
+//
+// 只关背光,不停联网:点亮的那一下看到的就是最新比分,不用等一次拉取。
+// s_screen_off 由空闲任务置位、由按键回调清除,两边都是 32 位对齐读写,
+// 不加锁也不会读到半个值。
+static volatile int64_t s_last_input_us;
+static volatile bool s_screen_off;
+static uint8_t s_brightness = 100;
+
+static void screen_wake(void) {
+    if (!s_screen_off) return;
+    s_screen_off = false;
+    bsp_display_backlight(s_brightness);
+    ESP_LOGI(TAG, "按键点亮屏幕");
+}
+
+// 500 ms 一次的粗粒度检查:息屏是"几十秒"量级的事,不需要更细。
+static void idle_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_screen_off) continue;
+
+        app_config_t cfg;
+        app_settings_get(&cfg);
+        const uint16_t off_seconds = cfg.screen_off_seconds;
+        if (off_seconds == 0) continue;   // 常亮
+
+        const int64_t idle_us = esp_timer_get_time() - s_last_input_us;
+        if (idle_us < (int64_t)off_seconds * 1000000LL) continue;
+
+        s_screen_off = true;
+        bsp_display_backlight(0);
+        ESP_LOGI(TAG, "无操作 %u 秒,息屏", (unsigned)off_seconds);
+    }
+}
+
 // ---------------------------------------------------------------- 配置桥
 
 void app_settings_get(app_config_t *out) {
@@ -75,6 +112,11 @@ void app_settings_apply(const app_config_t *cfg, bool credentials_changed) {
     }
     app_net_apply_config(&s_config);
     app_net_request_refresh();
+
+    // 亮度立刻生效。息屏期间只记下新值,等按键点亮时再用——否则在设置页
+    // 调亮度会把已经熄掉的屏幕点着,看着像误触。
+    s_brightness = s_config.brightness_percent;
+    if (!s_screen_off) bsp_display_backlight(s_brightness);
 
     // 串口任务也会走到这里,所以只置标志,由界面的定时器在 LVGL 上下文里重画。
     app_ui_notify_config_changed();
@@ -195,7 +237,10 @@ void app_main(void) {
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
         return;
     }
-    bsp_display_backlight(100);
+    // 背光按保存的亮度点亮;息屏倒计时从这一刻开始算。
+    s_brightness = s_config.brightness_percent;
+    s_last_input_us = esp_timer_get_time();
+    bsp_display_backlight(s_brightness);
 
     // 电量是可选能力:芯片不应答时界面显示 "--%",不影响比分。
     if (bsp_battery_init() != ESP_OK) {
@@ -249,6 +294,7 @@ void app_main(void) {
     }
 
     (void)xTaskCreate(battery_task, "app_batt", 3072, NULL, 2, NULL);
+    (void)xTaskCreate(idle_task, "app_idle", 3072, NULL, 2, NULL);
 
     // 串口命令保留作兜底(批量刷机、远程排查),屏上配网才是主路径。
     static const app_console_hooks_t hooks = {
@@ -257,7 +303,9 @@ void app_main(void) {
     };
     app_console_start(&hooks);
 
-    ESP_LOGI(TAG, "就绪:配网=%s,间隔=%us",
+    ESP_LOGI(TAG, "就绪:配网=%s,间隔=%us,息屏=%us,亮度=%u%%",
              app_config_has_credentials(&s_config) ? "已保存" : "无",
-             (unsigned)s_config.refresh_seconds);
+             (unsigned)s_config.refresh_seconds,
+             (unsigned)s_config.screen_off_seconds,
+             (unsigned)s_config.brightness_percent);
 }
