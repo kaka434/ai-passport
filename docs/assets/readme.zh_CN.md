@@ -10,7 +10,7 @@
 ## 目录结构
 
 - 每个应用一个子目录或一组同前缀文件，按应用名的 lowercase-kebab-case 命名，
-  例如 `football-live-board-scores.jpg`。
+  例如 `football-live-board-tomorrow.jpg`。
 - 二进制素材统一放这里，不与 Markdown 文档混放。
 - 涉及版权/授权的素材，在引用它的 README 里注明来源与许可。
 

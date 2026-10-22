@@ -12,7 +12,7 @@ to the upstream baseline. Upstream keeps this directory empty except for
 ## Structure
 
 - One subdirectory or one file prefix per application, named after the
-  application in lowercase-kebab-case, e.g. `football-live-board-scores.jpg`.
+  application in lowercase-kebab-case, e.g. `football-live-board-tomorrow.jpg`.
 - Binary material is stored here, never mixed into Markdown documentation.
 - Any copyrighted or licensed material records its source and license in the README
   that references it.

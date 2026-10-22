@@ -38,7 +38,7 @@ the score screen is just a column of matches, two lines each.
 | --- | --- |
 | Scores | One column of matches: live first, then today's fixtures, then today's finished matches. Each row shows league and state on the first line, then home team, score and away team on the second |
 | Detail | Page 1: score bar plus a goal timeline (home on the left, away on the right, minute in the middle; penalties marked, own goals marked). Page 2: formations plus eight statistics |
-| Settings | Wi-Fi setup, phone setup, IP address, refresh interval, refresh now, clear credentials |
+| Settings | Wi-Fi setup, phone setup, IP address, refresh interval, auto screen-off, brightness, refresh now, clear credentials |
 | Networks | Scanned SSIDs; previously used networks are pinned to the top and tagged as saved |
 | Password | A 6x7 on-screen keyboard for the selected secured network |
 | Phone | Hotspot name, password and address, plus a two-step hint; the screen mirrors the connection state |
@@ -60,12 +60,17 @@ away it is.
 The list then holds that day's fixtures and drops from five rows to four to make
 room for the banner. For the first two days the count reads "tomorrow" and "the day
 after tomorrow" rather than a number; from the third day on only the month-day is
-shown. If none of the next seven days has a match, the empty state says there are
+shown. The left label needs the text width plus the ellipsis: DOTS mode reserves the
+ellipsis cell before laying out, so five 12 px ideographs need a 72 px label and a 70
+px one truncates to "Next ma...".
+
+Seeing any other day - including tomorrow - is a deliberate page rather than an
+automatic jump: press Up on the first row or Down on the last one. If none of the next seven days has a match, the empty state says there are
 no matches in the coming week.
 
 | Button | Scores | Detail | Settings | Networks | Password | Phone |
 | --- | --- | --- | --- | --- | --- | --- |
-| Up/down click | Move the selection | Flip between goals and statistics | Move the selection | Move the selection | Move the keyboard cursor | Nothing |
+| Up/down click | Move the selection; pressing Up on the first row or Down on the last one flips one day | Flip between goals and statistics | Move the selection | Move the selection | Move the keyboard cursor | Nothing |
 | OK click | Open the selected match | Fetch this match again | Run the selected row | Pick this network | Press the current key | Restart the hotspot |
 | OK long press | Go to settings | Back to scores, same match | Go back to scores | Back to settings | Submit and connect | Stop the hotspot and go back |
 
@@ -193,23 +198,58 @@ The board answers "what is on today, and what already finished today", so
 `feed_accept()` applies three filters:
 
 1. **Competition**: only the English Premier League, La Liga, Serie A, Bundesliga,
-   Ligue 1, the Chinese Super League and China League One survive. The other
-   thousand-plus entries in the feed (Champions League, Championship, League Two,
-   Brasileirao, J-League, MLS and so on) are dropped here. Matching strips a
-   trailing "league" word and then compares for equality, so a competition name
-   that carries that suffix still matches, while a longer name that merely embeds
-   the same two characters is not mistaken for La Liga.
-2. **Date**: only matches whose kick-off falls today in China Standard Time. Live
-   matches are exempt, because a game that kicked off at 23:30 and is still running
-   past midnight is exactly what the viewer wants at that moment.
-3. **Per-category caps**: 10 live, 10 of today's fixtures, 4 of today's finished
-   matches, 24 in total, which is exactly `APP_MAX_MATCHES`. Keeping the sum of the
+   Ligue 1, the Chinese Super League, China League One, the Champions League and the
+   Europa League survive. The other thousand-plus entries in the feed (Europa
+   Conference League, Championship, League Two, Brasileirao, J-League, MLS and so on)
+   are dropped here. Matching strips a trailing "league" word and then compares for
+   equality, so a competition name that carries that suffix still matches, while a
+   longer name that merely embeds the same two characters is not mistaken for La Liga.
+2. **Date**: only matches whose kick-off falls on the day being shown in China
+   Standard Time. Live matches are exempt, because a game that kicked off at 23:30 and
+   is still running past midnight is exactly what the viewer wants at that moment.
+3. **Per-category caps**: 6 live, 20 of the day's fixtures, 14 of the day's finished
+   matches, 40 in total, which is exactly `APP_MAX_MATCHES`. Keeping the sum of the
    caps at or below the list capacity is deliberate: a streaming parser cannot go
    back and evict, so otherwise finished matches arriving early would crowd out the
-   fixtures that come later in the response.
+   fixtures that come later in the response. A day that is not today is single-purpose
+   and gets the whole list for its one category: a past day is all finished, a future
+   day is all fixtures.
+
+The caps were measured, not guessed: a Saturday can hold 30 whitelisted fixtures
+(Premier League through Ligue 1 plus the two Chinese leagues), and a Champions League
+match day adds nine or ten early-morning ties on top. The previous 24-row list with a
+four-match finished cap truncated both.
 
 Finished matches stay at the end of the list with their final score, so after a
 full day the score screen doubles as the day's fixture list and results.
+
+### The dawn window
+
+`match_list` anchors its window on the **UTC** day: a request at 14:11 CST returns
+07:30 on the current Beijing day through 09:06 the next one. Beijing 00:00 to 07:30 is
+never in that window, and every Champions League and Europa League tie kicks off
+inside it, so before this fix the board simply never showed them. `start` and `date`
+parameters on `match_list` are ignored, so the gap has to be filled from a second
+source:
+
+```text
+GET https://www.dongqiudi.com/magicball/v1/list/schedule_list
+      ?language=zh-CN&tab_type=result&cmp_type=soccer&start=YYYY-MM-DD%20HH:00:00
+```
+
+`tab_type=result` covers the 24 hours from `start` and holds only finished matches, so
+it supplies exactly the missing segment. The rows are appended into the list that
+`match_list` already filled - `app_feed_init_append()` keeps what is there and only
+accepts finished matches - and de-duplicated by match id.
+
+`schedule_list` cannot replace `match_list`: none of its tabs (`result`, `fixture`,
+`all`, `live`, `playing`) ever returns a match that is in progress, so a live match
+would disappear from the board. It is a supplement, not a substitute.
+
+The extra request costs about 220 KB, so it is throttled: before 07:00 every refresh
+tops the segment up (the last early kick-off may still be running), and after 07:00
+the segment is fetched once and then frozen until the day rolls over.
+
 
 ### Next match day
 
@@ -244,6 +284,36 @@ the UI can show that it is searching; otherwise a few seconds of waiting looks l
 a hang. A total network failure and "genuinely no matches" are treated differently:
 the former keeps the old data and reports an error rather than claiming the week is
 empty.
+
+Probing is only a fallback now. Once the dawn window is filled, a day almost always
+has something on it, so the probe no longer fires during the day and tomorrow's ties
+would be invisible. They are reached by paging instead - see below.
+
+### Paging across days
+
+`app_net_set_view_day()` selects which day the board shows: `0` today, `-1` the
+previous day, `1` to `7` the next one to seven days. The score screen flips it by
+pressing Up on the first row or Down on the last one, and the serial console has
+`board day [n]` for the same thing.
+
+- A day other than today is fetched from `schedule_list` with `tab_type=result` (past
+  days, finished matches only) or `tab_type=fixture` (future days, fixtures only).
+- Those days barely change, so each is fetched once and cached against its CST day
+  start; paging back to a day that is already loaded publishes nothing and does not
+  even flash "fetching".
+- `day_offset` stays `0` for a paged day. `day_offset` means "today was empty and this
+  is the day we jumped to", which is a different thing from "the user asked for this
+  day"; the header reads `view_day` to decide between `Replay 10-21`, `Tomorrow
+  10-23`, `The day after 10-25` and `N days later`.
+- A refresh takes seconds, so a user can page away while a request is in flight.
+  Every publish therefore compares `s_view_day` with the view captured at the start of
+  the fetch and drops the result when they differ, then re-wakes the fetch task. Without
+  that guard the screen showed the previous view's list for a few seconds before
+  flipping to the requested one.
+
+The dawn segment belongs to today's view only, and `s_parsed` is a single buffer, so
+entering another day invalidates it; switching back to today re-fetches the segment
+instead of showing a list that silently lost its early kick-offs.
 
 HTTPS uses the ESP-IDF certificate bundle, so the system clock must be valid before
 the first request. Once an IP is assigned, SNTP runs against `ntp.aliyun.com`,
@@ -283,6 +353,14 @@ Fields used:
 | Running score | the event's `score`, for example `"2-1"` |
 | Formations | `statistics.team_A.formation` / `team_B.formation` |
 | Statistics | `statistics.list[]`, each `{type, team_A:{value}, team_B:{value}}` |
+
+The detail endpoint escapes **every** Chinese character in the response as `\uXXXX`,
+including player names, so the escape branch has to decode real code points. The list
+endpoint serves raw UTF-8, and for a while the parser assumed that for both: names
+came out as `?` in the goal timeline. The decoder now handles one to four byte
+encodings and surrogate pairs (an unpaired surrogate degrades to U+FFFD), and
+`app_fonts_sanitize()` drops zero-width format characters (U+200B and friends) instead
+of rendering them as a lone question mark.
 
 Two parsing traps, both pinned by host tests:
 
@@ -380,7 +458,7 @@ that are both torn down when setup ends; the 1-second UI timer copies the snapsh
 when the revision changes. No LVGL object is ever touched outside the LVGL context
 or without the lock. Radio bring-up is guarded by its own mutex so that neither the
 network task nor the scan task can call `esp_wifi_init()` twice. The network task
-stack is 8 KB (headroom for the mbedtls handshake) and the 24-match staging list
+stack is 8 KB (headroom for the mbedtls handshake) and the 40-match staging list
 lives in static storage, not on the stack.
 
 The wake-key guard is inherited from the baseline: after a deep-sleep button wake
@@ -422,8 +500,9 @@ never loads a single match.
 
 - One refresh downloads 1.64 MB, so the presets start at 60 seconds and default to
   120. Shorter intervals cost battery and are more likely to be rate limited.
-- Only today's matches in seven competitions are shown. Widening that means editing
-  `ALLOWED_LEAGUES` and the date filter in `feed_accept()`.
+- Only today's matches in nine competitions are shown, plus the one day the user pages
+  to. Widening the competition set means editing `ALLOWED_LEAGUES` and the date filter
+  in `feed_accept()`.
 - Team names are bounded by the 240 px panel: anything longer than about five
   ideographs is truncated with an ellipsis.
 - Scanning is blocking, so the network list takes roughly 3 to 5 seconds to fill;

@@ -18,9 +18,19 @@ The upstream project overview is [`docs/README.md`](docs/README.md).
 ## What it does
 
 - **Today only**: live matches first, then today's fixtures, then today's finished
-  matches, up to 24 rows.
-- **Seven competitions**: Premier League, La Liga, Serie A, Bundesliga, Ligue 1,
-  Chinese Super League, China League One. Everything else is dropped.
+  matches, up to 40 rows. Early-morning kick-offs (00:45 / 03:00 Champions League and
+  Europa League) belong to today, so they stay visible during the day.
+- **Page both ways**: press Up again on the first row to go back one day (header turns
+  into `Replay 10-21`), press Down on the last row to go forward one day (`Tomorrow
+  10-23`), up to seven days ahead. That is how tomorrow's early kick-offs stay
+  reachable during the day. Those days barely change, so each is fetched once and
+  never polled.
+- **Nine competitions**: Premier League, La Liga, Serie A, Bundesliga, Ligue 1,
+  Chinese Super League, China League One, plus the Champions League and the Europa
+  League. Everything else is dropped.
+- **GOAL splash on cold boot**: an 8-frame pixel-art ball curls into the net and
+  `GOAL!` bursts, about 2.2 s. It is skipped on key wake, and because the frames are
+  L8 grayscale in flash it costs 600 KB of flash and no RAM.
 - **Says "no matches" out loud**: when the day is empty it jumps to the nearest match
   day and pins an amber banner (`Next match day 10-24 · in 3 days`); if nothing is
   scheduled within seven days it shows "No matches soon" instead of a blank page.
@@ -38,14 +48,19 @@ The upstream project overview is [`docs/README.md`](docs/README.md).
 ## Photos
 
 The device is an ESP32-C3 replica board with an ST7789P3 240x320 portrait panel and
-three keys on one ADC, inside FoloToy's transparent case. The three photos were taken
-on 2026-10-21, when only one La Liga match existed that day (Levante vs Athletic
-Bilbao, 02:00), which happens to show three states at once: jumping to the next match
-day, a not-yet-started detail page, and the settings screen.
+three keys on one ADC, inside FoloToy's transparent case. The four photos were taken
+on 2026-10-22: tomorrow's eighteen Europa League ties reached by paging forward,
+the previous day's nine Champions League results reached by paging back, the goal
+timeline of Liverpool 4-3 Villarreal (player names now render instead of `?`), and
+the settings screen with auto screen-off and brightness.
 
-| Scores (jumps to the next match day) | Detail · not started | Settings |
-| :---: | :---: | :---: |
-| ![Scores](docs/assets/football-live-board-scores.jpg) | ![Detail](docs/assets/football-live-board-detail.jpg) | ![Settings](docs/assets/football-live-board-settings.jpg) |
+| Scores · tomorrow | Replay · previous day |
+| :---: | :---: |
+| ![Scores tomorrow](docs/assets/football-live-board-tomorrow.jpg) | ![Replay](docs/assets/football-live-board-replay.jpg) |
+
+| Detail · goal timeline | Settings |
+| :---: | :---: |
+| ![Detail](docs/assets/football-live-board-detail.jpg) | ![Settings](docs/assets/football-live-board-settings.jpg) |
 
 ## Hardware and prerequisites
 
@@ -59,18 +74,22 @@ day, a not-yet-started detail page, and the settings screen.
 | Page | Content |
 | --- | --- |
 | Scores | live / today not started / today finished; "league + state" above, "home score away" below |
+| Replay | yesterday's finished matches, header shows `Replay MM-DD` |
+| Future | day N's fixtures, header shows `Tomorrow MM-DD` / `MM-DD` |
 | Detail 1 | score strip + goal timeline |
 | Detail 2 | formation + eight statistics |
-| Settings | Wi-Fi setup, phone setup, network address, refresh interval (60/120/300 s), refresh now, forget |
+| Settings | Wi-Fi setup, phone setup, network address, refresh interval (60/120/300 s), screen timeout (never/30/60/120 s), brightness (25/50/75/100%), refresh now, forget |
 | AP / password / phone | scanned SSIDs, on-screen keyboard, phone provisioning guide |
 
 | Key | Scores | Detail | Settings |
 | --- | --- | --- | --- |
-| Up / down tap | move selection | flip sub-page | move selection |
+| Up / down tap | move selection; tap again at either end to page the date | flip sub-page | move selection |
 | OK tap | open detail | re-fetch this match | run current row |
 | OK long press | enter settings | back to scores | back to scores |
 
-Backlight drops to 18% after two idle minutes and returns on any key.
+Brightness follows the 25/50/75/100% choice in settings; after the configured idle
+timeout the backlight turns off, and any key turns it back on showing the latest
+scores (the board keeps refreshing while the screen is dark).
 
 ## Build and flash
 
@@ -97,7 +116,10 @@ USB Serial/JTAG, 115200, after boot:
 wifi set <ssid> <password>   store Wi-Fi and connect now
 wifi status / wifi clear     inspect / drop stored Wi-Fi
 board interval <60|120|300>  auto-refresh interval
+board bright <25|50|75|100>  screen brightness
+board screenoff <0|30|60|120>  auto screen-off, 0 = always on
 board refresh                refresh now
+board day [n]                inspect / switch the date view (0=today, -1=yesterday, 1..7)
 board detail <match_id>      fetch one match's detail (debugging)
 ```
 
