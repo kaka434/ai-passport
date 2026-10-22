@@ -16,6 +16,8 @@ idf_component_register(
          "app_portal.c"
          "app_console.c"
          "app_ui.c"
+         "app_splash.c"
+         "splash_frames.c"
          "app_fonts.c"
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/app_font_12.c"
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/app_font_15.c"

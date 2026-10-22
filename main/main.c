@@ -7,6 +7,7 @@
 #include "app_console.h"
 #include "app_net.h"
 #include "app_settings.h"
+#include "app_splash.h"
 #include "app_store.h"
 #include "app_ui.h"
 
@@ -204,6 +205,14 @@ void app_main(void) {
     // 回调要在联网任务之前装好:开机自动连上第一个热点时也得记进历史。
     app_net_set_connected_hook(on_wifi_connected);
     app_net_start(&s_config);
+
+    // 开机动画放在联网任务启动之后:这两秒 Wi-Fi 正在连接,动画结束时往往
+    // 已经拿到 IP,所以它不额外拖慢"看到比分"的时间。
+    //
+    // 按键唤醒不放:用户是按了键才看到屏幕的,再让他等 2.2 秒等于按了没反应。
+    if (!(wake_causes & (1u << ESP_SLEEP_WAKEUP_GPIO))) {
+        app_splash_show();
+    }
 
     if (bsp_lvgl_lock(1000)) {
         app_ui_init();
