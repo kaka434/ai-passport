@@ -30,6 +30,14 @@ static int utf8_decode(const unsigned char *p, uint32_t *cp) {
     return 1;
 }
 
+// 零宽/格式字符:排版用的,本身没有字形。懂球帝的球员名里实测出现过 U+200B,
+// 按"缺字"处理会在名字中间冒出一个孤零零的 '?',所以直接丢掉。
+static bool is_invisible(uint32_t cp) {
+    return (cp >= 0x200B && cp <= 0x200F)   // 零宽空格 / 方向标记
+           || cp == 0x00AD                  // 软连字符
+           || cp == 0xFEFF;                 // BOM
+}
+
 const char *app_fonts_sanitize(const char *src, char *dst, size_t cap) {
     if (dst == NULL || cap == 0) return src;
     if (src == NULL) {
@@ -44,6 +52,11 @@ const char *app_fonts_sanitize(const char *src, char *dst, size_t cap) {
         uint32_t cp = 0;
         const int len = utf8_decode(p, &cp);
         if (len <= 0) break;
+
+        if (is_invisible(cp)) {
+            p += len;
+            continue;
+        }
 
         bool covered = false;
         if (cp >= 0x20 && cp < 0x7F) {

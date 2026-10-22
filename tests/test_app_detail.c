@@ -325,6 +325,50 @@ static void test_goal_cap(void) {
     assert(detail.goals[APP_GOAL_MAX - 1].minute == APP_GOAL_MAX);
 }
 
+// 详情接口把中文整段转义成 \uXXXX(实测 /data/overview/match/{id} 就是这样),
+// 而比分列表接口给的是直接 UTF-8。解析器必须两种都认。
+//
+// 这条是回归测试:曾经 \u 分支只认 ASCII,≥0x80 的码点一律降级成 '?',于是
+// 进球列表里每个球员名都显示成 ???,队名却正常(队名走的是比分列表那份解析)。
+static void test_unicode_escaped_names(void) {
+    // "尼科-帕斯" / "姆巴佩",外加一个 BMP 外的 emoji(代理对)。
+    static const char JSON[] =
+        "{\"status\":0,\"match_status\":\"Played\","
+        "\"events\":{"
+        "\"2\":{\"minute\":\"2\",\"teamAEvents\":["
+        "{\"person\":\"\\u5c3c\\u79d1-\\u5e15\\u65af\",\"score\":\"1-0\",\"code\":\"G\"}],"
+        "\"teamBEvents\":[]},"
+        "\"49\":{\"minute\":\"49\",\"teamAEvents\":[],\"teamBEvents\":["
+        "{\"person\":\"\\u59c6\\u5df4\\u4f69\",\"score\":\"1-1\",\"code\":\"G\"}]},"
+        "\"57\":{\"minute\":\"57\",\"teamAEvents\":["
+        "{\"person\":\"A\\u00e9B\",\"score\":\"2-1\",\"code\":\"G\"}],"
+        "\"teamBEvents\":[]},"
+        "\"76\":{\"minute\":\"76\",\"teamAEvents\":[],\"teamBEvents\":["
+        "{\"person\":\"\\ud83d\\ude00\",\"score\":\"2-2\",\"code\":\"G\"}]},"
+        "\"90+1\":{\"minute\":\"90+1\",\"teamAEvents\":["
+        "{\"person\":\"\\ud83d\",\"score\":\"3-2\",\"code\":\"G\"}],"
+        "\"teamBEvents\":[]}"
+        "},"
+        "\"statistics\":{}}";
+
+    app_detail_t detail;
+    assert(app_detail_parse(JSON, strlen(JSON), &detail));
+    assert(detail.goal_count == 5);
+
+    // 三个汉字 + 连字符 + 两个汉字,原样还原。
+    assert(strcmp(detail.goals[0].player, "尼科-帕斯") == 0);
+    assert(strcmp(detail.goals[1].player, "姆巴佩") == 0);
+    // Latin-1 范围内的转义走两字节分支。"A" 单独拆开,否则 \xa9B 会被当成
+    // 一个超范围的十六进制转义。
+    assert(strcmp(detail.goals[2].player, "A\xc3\xa9" "B") == 0);
+    // 代理对拼成一个 4 字节码点(U+1F600)。
+    assert(strcmp(detail.goals[3].player, "\xf0\x9f\x98\x80") == 0);
+    // 孤立的半个代理降级成 U+FFFD,不能把后面的解析带偏。
+    assert(strcmp(detail.goals[4].player, "\xef\xbf\xbd") == 0);
+    assert(detail.goals[4].minute == 90);
+    assert(detail.goals[4].extra == 1);
+}
+
 int main(void) {
     test_full_sample();
     test_null_sections();
@@ -335,6 +379,7 @@ int main(void) {
     test_player_truncation();
     test_weird_minute();
     test_goal_cap();
+    test_unicode_escaped_names();
     puts("test_app_detail: OK");
     return 0;
 }

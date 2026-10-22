@@ -80,6 +80,48 @@ static bool j_is_null(jcur_t *c) {
     return j_ensure(c, 4) && memcmp(c->win + c->pos, "null", 4) == 0;
 }
 
+// 读 \u 后面的四位十六进制。数据截断或不是十六进制时返回 false。
+static bool j_hex4(jcur_t *c, unsigned *out) {
+    unsigned value = 0;
+    for (int i = 0; i < 4; i++) {
+        const int h = j_cur(c);
+        if (h < 0) return false;
+        unsigned digit;
+        if (h >= '0' && h <= '9') digit = (unsigned)(h - '0');
+        else if (h >= 'a' && h <= 'f') digit = (unsigned)(h - 'a' + 10);
+        else if (h >= 'A' && h <= 'F') digit = (unsigned)(h - 'A' + 10);
+        else return false;
+        value = (value << 4) | digit;
+        j_adv(c);
+    }
+    *out = value;
+    return true;
+}
+
+// 码点编码成 UTF-8,最多 4 字节。返回写出的字节数。
+static size_t utf8_put(unsigned cp, char *out) {
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 // 读一个字符串。buf 为 NULL 时只跳过。截断一定停在 UTF-8 字符边界上,
 // 否则屏幕上会出现半个汉字的乱码。
 static bool j_string(jcur_t *c, char *buf, size_t cap) {
@@ -97,7 +139,10 @@ static bool j_string(jcur_t *c, char *buf, size_t cap) {
         j_adv(c);
         if (ch == '"') break;
 
-        char out = (char)ch;
+        char enc[4];
+        size_t enc_len = 1;
+        enc[0] = (char)ch;
+
         if (ch == '\\') {
             ch = j_cur(c);
             if (ch < 0) return false;
@@ -108,37 +153,54 @@ static bool j_string(jcur_t *c, char *buf, size_t cap) {
                 case 'r':
                 case 'b':
                 case 'f':
-                    out = ' ';
+                    enc[0] = ' ';
                     break;
                 case 'u': {
-                    // \uXXXX:接口给中文时是直接 UTF-8,这里只兜底处理 ASCII 转义,
-                    // 其余统一降级成 '?',不去做代理对拼接。
+                    // \uXXXX:详情接口把中文整段转义了(球员名、队名、统计名都是),
+                    // 必须真的解成 UTF-8。
+                    //
+                    // 这里原来只认 ASCII,其余码点一律降级成 '?',理由是
+                    // "接口给中文时是直接 UTF-8"——那个假设对比分列表成立,
+                    // 对详情接口不成立,结果进球列表里每个球员名都是 ???。
                     unsigned code = 0;
-                    for (int i = 0; i < 4; i++) {
-                        const int h = j_cur(c);
-                        if (h < 0) break;
-                        j_adv(c);
-                        code <<= 4;
-                        if (h >= '0' && h <= '9') code |= (unsigned)(h - '0');
-                        else if (h >= 'a' && h <= 'f') code |= (unsigned)(h - 'a' + 10);
-                        else if (h >= 'A' && h <= 'F') code |= (unsigned)(h - 'A' + 10);
+                    if (!j_hex4(c, &code)) return false;
+
+                    // BMP 以外的字符在 JSON 里是代理对,要拼回一个码点;
+                    // 孤立的半个代理按 U+FFFD 处理,别让后面的解析错位。
+                    if (code >= 0xD800 && code <= 0xDBFF) {
+                        unsigned low = 0;
+                        if (j_ensure(c, 2) && c->win[c->pos] == '\\'
+                            && c->win[c->pos + 1] == 'u') {
+                            j_adv(c);
+                            j_adv(c);
+                            if (!j_hex4(c, &low)) return false;
+                            code = (low >= 0xDC00 && low <= 0xDFFF)
+                                       ? 0x10000u + ((code - 0xD800u) << 10)
+                                             + (low - 0xDC00u)
+                                       : 0xFFFDu;
+                        } else {
+                            code = 0xFFFDu;
+                        }
+                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                        code = 0xFFFDu;
                     }
-                    out = (code < 0x80) ? (char)code : '?';
+                    enc_len = utf8_put(code, enc);
                     break;
                 }
                 default:
-                    out = (char)ch;   // \" \\ \/ 原样
+                    enc[0] = (char)ch;   // \" \\ \/ 原样
                     break;
             }
         }
 
         if (buf == NULL) continue;
-        if (n + 1 < cap) {
+        if (n + enc_len < cap) {
             // safe 记的是"这个字符开始之前"的位置:截断若发生在字符中间,
             // 回退到这里才能保证结尾是完整字符。
             const size_t before = n;
-            buf[n++] = out;
-            if (((unsigned char)out & 0xC0) != 0x80) safe = before;
+            memcpy(buf + n, enc, enc_len);
+            n += enc_len;
+            if (((unsigned char)enc[0] & 0xC0) != 0x80) safe = before;
         } else {
             truncated = true;
         }
