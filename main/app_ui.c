@@ -778,7 +778,7 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
                 snprintf(value, cap, "未配网");
             }
             break;
-        case APP_SET_ROW_NETWORK:
+        case APP_SET_ROW_IP:
             snprintf(value, cap, "%s", s_snap.ip[0] ? s_snap.ip : "--");
             break;
         case APP_SET_ROW_PORTAL:
@@ -1344,7 +1344,7 @@ static void handle_setting(int row) {
             app_settings_apply(&cfg, true);
             s_cfg = cfg;
             break;
-        case APP_SET_ROW_NETWORK:
+        case APP_SET_ROW_IP:
         default:
             break;
     }

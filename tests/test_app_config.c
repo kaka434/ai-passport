@@ -96,7 +96,7 @@ static void test_setting_rows(void) {
     // 界面按这个顺序画,按键按这个顺序命中;两页布局都依赖这个顺序稳定。
     assert(APP_SET_ROW_WIFI == 0);
     assert(APP_SET_ROW_PORTAL == 1);
-    assert(APP_SET_ROW_NETWORK == 2);
+    assert(APP_SET_ROW_IP == 2);
     assert(APP_SET_ROW_INTERVAL == 3);
     assert(APP_SET_ROW_SCREEN_OFF == 4);
     assert(APP_SET_ROW_BRIGHTNESS == 5);

@@ -27,7 +27,7 @@ typedef struct {
 typedef enum {
     APP_SET_ROW_WIFI = 0,
     APP_SET_ROW_PORTAL,      // 手机配网:开热点,手机浏览器里输密码
-    APP_SET_ROW_NETWORK,
+    APP_SET_ROW_IP,
     APP_SET_ROW_INTERVAL,
     APP_SET_ROW_SCREEN_OFF,  // 自动息屏
     APP_SET_ROW_BRIGHTNESS,  // 屏幕亮度
