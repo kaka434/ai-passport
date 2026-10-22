@@ -5,10 +5,12 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -28,8 +30,19 @@ static const char *TAG = "app_net";
 //   cmp_type=soccer  只要足球(接口还支持 basketball)
 //   tab_type=all     全部比赛(直播中/未开始/已结束都在这一个列表里)
 // 站点会校验 Referer,不带就返回 567 + 一段 HTML,所以下面必须补上。
+//
+// 注意这个接口的窗口是**UTC 日**,不是北京日:实测下午 14:00 请求,返回的
+// 比赛从当天北京 07:30 才开始。北京 00:00-07:30 这一段它压根不返回,而欧冠/
+// 欧联的凌晨场(00:45 / 03:00)正好全落在这一段里——这是"主页看不到凌晨
+// 比赛"的根因。补这一段要用下面的赛程接口,见 fetch_today_extra()。
 #define APP_FEED_URL \
     "https://www.dongqiudi.com/magicball/v1/list/match_list?language=zh-CN&cmp_type=soccer&tab_type=all"
+// 赛程接口:start 起 24 小时,start 是 UTC 的 "YYYY-MM-DD HH:00:00"。
+// tab_type=result 只给已完场,tab_type=fixture 只给未开始,**正在踢的那场
+// 三个 tab 都不返回**(实测),所以它只能用来补历史,不能替掉 match_list。
+#define APP_FEED_SCHEDULE_URL \
+    "https://www.dongqiudi.com/magicball/v1/list/schedule_list" \
+    "?language=zh-CN&tab_type=%s&cmp_type=soccer&start=%s"
 #define APP_FEED_REFERER "https://www.dongqiudi.com/match"
 #define APP_FEED_UA "Mozilla/5.0 (FoloToy-AI-Passport)"
 
@@ -40,11 +53,24 @@ static const char *TAG = "app_net";
 #define APP_TIME_WAIT_MS 15000
 #define APP_RETRY_MIN_MS 5000
 #define APP_RETRY_MAX_MS 60000
+
+// 拉取失败后的重试节奏:先隔 1.2 秒立刻再试一次(多数瞬时抖动这一下就过去了),
+// 两次都失败才把下一次等待压到 30 秒——比睡满整个刷新间隔(60~300 秒)自愈得快,
+// 又不会在真断网时把流量和电耗在死循环重试上。
+#define APP_RETRY_ONCE_DELAY_MS 1200
+#define APP_RETRY_SHORT_WAIT_MS 30000
 // 今天没有白名单赛事时,最多往后找几天。七天覆盖一个国际比赛日间歇够用,
 // 再多就是拿流量换一个"确实没有"的结论。
 #define APP_NEXT_DAY_MAX 7
 // 已经找到下一个比赛日之后,隔多久再确认一次(临期会补上新的场次)。
 #define APP_NEXT_RECHECK_SECONDS (30 * 60)
+
+// 今天"凌晨段"的补拉节流。
+//
+// 补一份 schedule_list 要 200 KB 上下,而凌晨场最晚 04:00 开球、06:00 前
+// 一定踢完,过了这个点比分就定格了,当天再补也是同一份数据。所以 07:00
+// 之后当天只补一次——正好把流量开销从"每次刷新"压到"每天一次"。
+#define APP_EXTRA_SETTLE_HOUR 7
 
 static SemaphoreHandle_t s_lock;
 // 单独一把锁保护"射频只初始化一次":联网任务和扫描任务都会拉 Wi-Fi,
@@ -65,6 +91,24 @@ static int s_next_day;
 static bool s_next_probed;          // 是否已经探过一轮(含"确实没有")
 static int64_t s_next_day_start;    // 那一天的 CST 00:00(UTC 秒),用来判断缓存过期
 static int64_t s_next_probe_at;     // 上次探测的时刻(UTC 秒)
+// 用户选的日期:0 = 今天,-1 = 回看前一天,1..7 = 未来第 N 天。
+// 只有 app_net_set_view_day() 会改,联网任务读它来决定这一轮拉哪一份。
+static int8_t s_view_day;
+// 非今天那份数据的缓存。s_parsed 只有一块,所以最多只能缓存一天:切到别的
+// 日子就把前一天的数据覆盖掉了,这也是下面要靠 s_published_view 判断
+// "缓存到底还能不能用"的原因。
+static bool s_day_cache_valid;
+static int64_t s_day_cache_key;     // 拉的是哪一天的 CST 00:00(UTC 秒)
+// 今天"凌晨段"补过没有,补的是哪一天,以及补的时刻。见 APP_EXTRA_SETTLE_HOUR。
+static bool s_today_extra_valid;
+static int64_t s_today_extra_key;
+static int64_t s_today_extra_at;
+// 快照里实际装的是哪一天的比赛:0 / -1。
+//
+// 和 s_view_day 的区别很关键:用户按上下键的瞬间 s_view_day 就变了,但数据
+// 要等拉回来才变。这里只在 publish() 里更新,用来判断"切回前日时缓存能不能
+// 直接复用"——数据已经被今天那份覆盖过,就不能,必须重拉。
+static int8_t s_published_view;
 static char *s_read_buf;
 // 扫描结果缓冲。约 1.2 KB,同样放静态区,不占任务栈。
 static wifi_ap_record_t s_scan_records[APP_SCAN_MAX];
@@ -303,9 +347,11 @@ static bool ensure_time_synced(void) {
 
 // 流式拉取一份比赛列表:边收边解析,不把响应攒在内存里。
 // url 可以是"今天"的列表接口,也可以是某一天的赛程接口;target_day 交给
-// 解析器决定留哪一天。成功返回 ESP_OK;失败时调用方保留上一次的数据。
+// 解析器决定留哪一天。append=true 时不清空 out,只往里面补完场——补凌晨段
+// 用这个模式,两份响应的重叠部分靠 upsert 按 id 去重。
+// 成功返回 ESP_OK;失败时调用方保留上一次的数据。
 static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target_day,
-                              int64_t now_utc, const char *what) {
+                              int64_t now_utc, const char *what, bool append) {
     esp_http_client_config_t cfg = {
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -348,7 +394,12 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
     }
 
     app_feed_t feed;
-    app_feed_init(&feed, out, now_utc);
+    if (append) {
+        app_feed_init_append(&feed, out, now_utc);
+    } else {
+        app_feed_init(&feed, out, now_utc);
+        app_feed_set_day(&feed, target_day);
+    }
     feed.target_day = target_day;
 
     size_t total = 0;
@@ -385,11 +436,13 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
 
 // 今天的列表。目标日固定是 0。
 static esp_err_t fetch_matches(int64_t now_utc) {
-    return fetch_stream(APP_FEED_URL, &s_parsed, 0, now_utc, "比分列表");
+    return fetch_stream(APP_FEED_URL, &s_parsed, 0, now_utc, "比分列表", false);
 }
 
-// 未来第 day 天的赛程。接口要 UTC 的 "YYYY-MM-DD HH:00:00",空格必须编码。
-static esp_err_t fetch_day(int64_t now_utc, int day) {
+// 拼 schedule_list 的 URL。day 是相对"今天"的天数(-1 = 昨天,0 = 今天,
+// 1..7 = 未来第 N 天),内部换算成"北京时间那天 00:00"对应的 UTC 时刻。
+static void build_schedule_url(char *url, size_t cap, int64_t now_utc, int day,
+                               const char *tab) {
     char start[32];
     app_schedule_start_text(app_cst_day_start(now_utc, day), start, sizeof(start));
 
@@ -408,12 +461,72 @@ static esp_err_t fetch_day(int64_t now_utc, int day) {
     }
     encoded[n] = '\0';
 
+    snprintf(url, cap, APP_FEED_SCHEDULE_URL, tab, encoded);
+}
+
+// 未来第 day 天的赛程。接口要 UTC 的 "YYYY-MM-DD HH:00:00",空格必须编码。
+static esp_err_t fetch_day(int64_t now_utc, int day) {
     char url[192];
-    snprintf(url, sizeof(url),
-             "https://www.dongqiudi.com/magicball/v1/list/schedule_list"
-             "?language=zh-CN&tab_type=fixture&cmp_type=soccer&start=%s",
-             encoded);
-    return fetch_stream(url, &s_parsed, day, now_utc, "未来赛程");
+    build_schedule_url(url, sizeof(url), now_utc, day, "fixture");
+    return fetch_stream(url, &s_parsed, day, now_utc, "未来赛程", false);
+}
+
+// 今天的"凌晨段":北京 00:00 到 match_list 窗口起点(实测 07:30)之间那段。
+//
+// match_list 按 UTC 日切窗口,凌晨那批欧冠/欧联/西甲它压根不返回;赛程接口
+// 按 start 起 24 小时给,start 用"今天 00:00 CST"就能拿到完整的一天。
+// 两份响应的重叠区在白名单里基本是空的(白名单赛事最晚 04:00 开球、06:00
+// 前结束),真重叠了也由 upsert 按 id 去重。
+//
+// 用 append 模式:match_list 那份已经把直播和未开始都拿到了,这里只补完场。
+static esp_err_t fetch_today_extra(int64_t now_utc) {
+    char url[192];
+    build_schedule_url(url, sizeof(url), now_utc, 0, "result");
+    return fetch_stream(url, &s_parsed, 0, now_utc, "今天凌晨段", true);
+}
+
+// 回看前一天:整份都是已完场,一份 result 就够(实测 200~450 KB)。
+static esp_err_t fetch_prev_day(int64_t now_utc, int day) {
+    char url[192];
+    build_schedule_url(url, sizeof(url), now_utc, day, "result");
+    return fetch_stream(url, &s_parsed, day, now_utc, "前日赛程", false);
+}
+
+// 翻到未来某一天。整份都是未开始,一份 fixture 就够。
+static esp_err_t fetch_future_day(int64_t now_utc, int day) {
+    char url[192];
+    build_schedule_url(url, sizeof(url), now_utc, day, "fixture");
+    return fetch_stream(url, &s_parsed, day, now_utc, "未来赛程", false);
+}
+
+// 拉取期间用户可能已经翻走了。这时手里这份属于旧视图,发布出去会把界面
+// 从"正在拉取"打回旧日期的列表(真机上能明显看到按一下键又跳回去),而且
+// 下一次纠正要等满一个刷新间隔。所以丢掉它,并叫醒自己立刻按新视图重拉。
+static bool view_changed_during_fetch(int8_t view) {
+    if (s_view_day == view) return false;
+    ESP_LOGI(TAG, "拉取期间视图已切到第 %d 天,丢弃本次结果", (int)s_view_day);
+    if (s_task != NULL) xTaskNotifyGive(s_task);
+    return true;
+}
+
+// 今天要不要补凌晨段。见 APP_EXTRA_SETTLE_HOUR。
+static bool need_today_extra(int64_t now_utc) {    if (!s_today_extra_valid) return true;
+
+    // 跨天了:新的一天有新的凌晨场,要重新补。
+    if (s_today_extra_key != app_cst_day_start(now_utc, 0)) return true;
+
+    app_datetime_t now_dt;
+    if (!app_datetime_from_utc(now_utc, &now_dt)) return true;
+    // 07:00 之前凌晨场可能还在踢,每次都补。
+    if (now_dt.hour < APP_EXTRA_SETTLE_HOUR) return true;
+
+    // 已经过了定格时间。这里要判"定格之后补过一次没有",而不是"补过一次
+    // 没有":设备从凌晨一直开着的话,06:00 那次补拉拿到的只是当时已完场的,
+    // 05:30 开球那几场还没结束;等到 08:00 match_list 的窗口翻篇、凌晨段
+    // 彻底消失,就必须再补一次,否则那几场就漏了。
+    app_datetime_t at_dt;
+    if (!app_datetime_from_utc(s_today_extra_at, &at_dt)) return true;
+    return at_dt.hour < APP_EXTRA_SETTLE_HOUR;
 }
 
 // 今天没有白名单赛事时,按天往前找最近的一个比赛日。
@@ -454,7 +567,11 @@ static int probe_next_day(int64_t now_utc) {
 
 // 把一份结果发布成快照。day_offset:0 = 今天,1..7 = 未来第 N 天,
 // -1 = 已经找过但未来七天都没有赛事。
-static void publish(const app_match_list_t *matches, int8_t day_offset, const app_config_t *cfg) {
+//
+// view_day 显式传进来,不在这里读 s_view_day:拉取期间用户可能已经翻走了,
+// 读全局变量会把"旧数据 + 新日期"一起发布出去。
+static void publish(const app_match_list_t *matches, int8_t day_offset, int8_t view_day,
+                    const app_config_t *cfg) {
     wifi_ap_record_t ap = { 0 };
     const int8_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
 
@@ -463,6 +580,8 @@ static void publish(const app_match_list_t *matches, int8_t day_offset, const ap
     if (matches != NULL) s_snapshot.matches = *matches;
     else app_match_list_reset(&s_snapshot.matches);
     s_snapshot.day_offset = day_offset;
+    s_snapshot.view_day = view_day;
+    s_published_view = view_day;
     s_snapshot.probing_next_day = false;
     s_snapshot.updated_at = (int64_t)time(NULL);
     s_snapshot.rssi = rssi;
@@ -482,23 +601,91 @@ static void publish(const app_match_list_t *matches, int8_t day_offset, const ap
     }
 }
 
-static void refresh_once(const app_config_t *cfg) {
-    set_state(APP_NET_FETCHING);
-
+// 返回 false 表示"这次拉取失败了"(网络/TLS/上游),调用方可以重试;
+// 返回 true 表示拿到了结论——包括"今天确实没有白名单赛事"这种正常结果。
+static bool refresh_once(const app_config_t *cfg) {
     const int64_t now = (int64_t)time(NULL);
+    // 一开始就把视图定下来:拉取要好几秒,期间用户可能又翻了页,
+    // 那样这一轮的结果就该按"翻页之后"的视图丢弃,而不是错位发布。
+    const int8_t view = s_view_day;
+
+    // ---- 用户翻到了别的日子(回看前一天 / 看未来第 N 天) ----
+    // 这些日子的数据基本是定格的,一天只拉一次。已经拉过就直接返回:上一次
+    // publish 的结果还在快照里,状态也还是 READY,连重画都不需要。
+    //
+    // 注意这个判断要在 set_state(FETCHING) 之前:放在后面的话,每 120 秒
+    // 的自动刷新都会先把界面刷成"正在拉取"再改回 READY,白闪一下。
+    if (view != 0) {
+        // s_parsed 接下来要装别的日子,今天那份(含凌晨段)就没了。切回今天
+        // 时必须重新补一次,否则凌晨那批比赛会凭空消失。
+        s_today_extra_valid = false;
+
+        const int64_t key = app_cst_day_start(now, view);
+        // 缓存能直接用的前提有两条:同一天拉过,而且快照里装的**就是**这一
+        // 天。少了后一条,来回翻页时会把别的日子的列表当成这一天发布出去。
+        if (s_day_cache_valid && s_day_cache_key == key && s_published_view == view) {
+            return true;
+        }
+
+        set_state(APP_NET_FETCHING);
+        const esp_err_t err = (view < 0) ? fetch_prev_day(now, view)
+                                         : fetch_future_day(now, view);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "第 %d 天拉取失败:空闲堆 %u B,最大连续块 %u B", (int)view,
+                     (unsigned)esp_get_free_heap_size(),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            set_error(view < 0 ? "拉取前日赛程失败" : "拉取未来赛程失败");
+            return false;
+        }
+
+        s_day_cache_valid = true;
+        s_day_cache_key = key;
+        // 拉取期间翻走了就别发布:这份是旧视图的。
+        if (view_changed_during_fetch(view)) return true;
+        // day_offset 保持 0:翻页不是"今天没球往后找到的那一天",界面靠
+        // view_day 判断标题写什么,两者不能混用。
+        publish(&s_parsed, 0, view, cfg);
+        return true;
+    }
+
+    // ---- 今天 ----
+    set_state(APP_NET_FETCHING);
     if (fetch_matches(now) != ESP_OK) {
         // 拉取失败不清空已有数据,界面继续显示上一次的结果。
+        //
+        // 把堆的现状一起打出来:TLS 握手要一块 16 KB 的入缓冲,如果这里
+        // "最大连续块"只有几 KB,那失败是内存碎片而不是网络,两种原因的
+        // 处理方式完全不同(前者要等详情任务结束,后者重试就好)。
+        ESP_LOGW(TAG, "拉取失败:空闲堆 %u B,最大连续块 %u B",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         set_error("拉取比分失败");
-        return;
+        return false;
     }
+
+    // 补今天的凌晨段。失败不算致命:match_list 那份已经把直播和未开始都
+    // 拿到了,少的只是凌晨已完场的那几场,不值得让整次刷新算失败。
+    if (need_today_extra(now)) {
+        if (fetch_today_extra(now) == ESP_OK) {
+            s_today_extra_valid = true;
+            s_today_extra_key = app_cst_day_start(now, 0);
+            s_today_extra_at = now;
+        } else {
+            ESP_LOGW(TAG, "凌晨段补拉失败,本次只显示比分列表的内容");
+        }
+    }
+
+    // 拉取期间翻走了就别往下走:这份是旧视图的,连"下一个比赛日"探测也
+    // 不该按旧视图的结论去跑。
+    if (view_changed_during_fetch(view)) return true;
 
     // 今天有球:正常显示,顺便把"下一个比赛日"的缓存作废——明天它就不准了。
     if (s_parsed.count > 0) {
         s_next_day = 0;
         s_next_probed = false;
         s_next_day_start = 0;
-        publish(&s_parsed, 0, cfg);
-        return;
+        publish(&s_parsed, 0, 0, cfg);
+        return true;
     }
 
     // 今天没有白名单赛事:显示最近的那个比赛日。
@@ -515,7 +702,7 @@ static void refresh_once(const app_config_t *cfg) {
         s_snapshot.state = APP_NET_READY;
         s_snapshot.revision++;
         unlock();
-        return;
+        return true;
     }
 
     // 探测要连下好几份响应,先把状态改成"正在拉取",界面才不会像卡住。
@@ -529,8 +716,12 @@ static void refresh_once(const app_config_t *cfg) {
     const int day = probe_next_day(now);
     if (day < 0) {
         // 一份都没拉下来:是网络问题,不是"没有赛事"。保留旧数据。
+        // 返回 false 让调用方重试,理由和拉取失败一样。
+        ESP_LOGW(TAG, "未来赛程探测失败:空闲堆 %u B,最大连续块 %u B",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         set_error("拉取未来赛程失败");
-        return;
+        return false;
     }
 
     s_next_day = day;
@@ -538,8 +729,9 @@ static void refresh_once(const app_config_t *cfg) {
     // "没找到"时把参考点放在第七天,让节流同样生效。
     s_next_day_start = app_cst_day_start(now, day > 0 ? day : APP_NEXT_DAY_MAX);
 
-    if (day > 0) publish(&s_parsed, (int8_t)day, cfg);
-    else publish(NULL, -1, cfg);
+    if (day > 0) publish(&s_parsed, (int8_t)day, 0, cfg);
+    else publish(NULL, -1, 0, cfg);
+    return true;
 }
 
 // ---------------------------------------------------------------- 热点扫描
@@ -847,7 +1039,20 @@ static void net_task(void *arg) {
             continue;
         }
 
-        refresh_once(&cfg);
+        if (!refresh_once(&cfg)) {
+            // 一次失败多半是瞬时的:TLS 握手超时、AP 侧丢包、上游偶发 5xx。
+            // 隔 1.2 秒立刻重试一次;还不行就把下一次等待压到 30 秒。
+            //
+            // 原来的写法是失败后直接睡满整个刷新间隔(60~300 秒),于是一次
+            // 抖动就让看板停更好几分钟——这正是"偶尔 TLS 会失败"最难受的
+            // 地方:错的不是那一次握手,而是失败之后没有第二次机会。
+            vTaskDelay(pdMS_TO_TICKS(APP_RETRY_ONCE_DELAY_MS));
+            if (!refresh_once(&cfg)) {
+                ESP_LOGW(TAG, "%d 秒后重试", APP_RETRY_SHORT_WAIT_MS / 1000);
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(APP_RETRY_SHORT_WAIT_MS));
+                continue;
+            }
+        }
         retry_ms = APP_RETRY_MIN_MS;
 
         // 睡到下一个刷新点,期间有手动刷新就提前醒。
@@ -929,6 +1134,37 @@ uint32_t app_net_revision(void) {
 
 void app_net_request_refresh(void) {
     if (s_task != NULL) xTaskNotifyGive(s_task);
+}
+
+void app_net_set_view_day(int8_t day) {
+    if (s_lock == NULL) return;
+    if (day < APP_VIEW_DAY_MIN) day = APP_VIEW_DAY_MIN;
+    if (day > APP_VIEW_DAY_MAX) day = APP_VIEW_DAY_MAX;
+    const int8_t want = day;
+
+    lock();
+    if (s_view_day == want) {
+        unlock();
+        return;
+    }
+    s_view_day = want;
+    // 快照里的 view_day 立刻改掉,不等拉取完成:界面要马上把页头换成
+    // "回看 MM-DD"并显示"正在拉取",否则按一下键屏幕毫无反应。
+    s_snapshot.view_day = want;
+    // 同时把状态压成"正在拉取",并清掉旧列表:那份是另一天的,留着会和新
+    // 页头对不上(标题写"回看 10-21"、底下挂的却是今天的比赛)。
+    s_snapshot.state = APP_NET_FETCHING;
+    s_snapshot.day_offset = 0;
+    app_match_list_reset(&s_snapshot.matches);
+    s_snapshot.revision++;
+    unlock();
+
+    if (s_task != NULL) xTaskNotifyGive(s_task);
+}
+
+int8_t app_net_view_day(void) {
+    // int8_t 的对齐读取本身是原子的,这里只是给串口命令看个状态。
+    return s_view_day;
 }
 
 bool app_net_wifi_ready(void) {

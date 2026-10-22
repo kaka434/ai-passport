@@ -183,7 +183,7 @@ static void test_feed_filters_by_state_and_day(void) {
 }
 
 static void test_feed_league_whitelist(void) {
-    // 五大联赛与中甲都留,其它赛事(欧冠/英冠/中乙/巴甲)一律丢。
+    // 五大联赛、中甲与欧冠都留,其它赛事(英冠/中乙/巴甲)一律丢。
     char json[4096];
     snprintf(json, sizeof(json),
              "{\"matches\":["
@@ -214,10 +214,11 @@ static void test_feed_league_whitelist(void) {
     app_feed_init(&feed, &list, NOW_UTC);
     feed_in_chunks(&feed, json, 53);
 
-    assert(list.count == 2);
-    assert(feed.dropped_league == 4);
+    assert(list.count == 3);
+    assert(feed.dropped_league == 3);
     assert(strcmp(list.items[0].league, "英超") == 0);
     assert(strcmp(list.items[1].league, "中甲") == 0);
+    assert(strcmp(list.items[2].league, "欧冠") == 0);
 }
 
 static void test_feed_keeps_todays_finished(void) {
@@ -246,9 +247,10 @@ static void test_feed_keeps_todays_finished(void) {
 }
 
 static void test_feed_caps_live_and_upcoming(void) {
-    // 15 场直播 + 15 场未开始:分类上限各 10 条,合计 20 条。
+    // 今天视图的名额分配:直播 6 / 未开始 20 / 完场 14,合计 40 = 列表容量。
+    // 喂 15 场直播 + 30 场未开始,两类都超出名额,列表应该正好停在 26 条。
     // 开赛时间都落在今天之内,否则会先被"只看当天"筛掉。
-    char json[16384];
+    char json[32768];
     size_t used = 0;
     used += (size_t)snprintf(json + used, sizeof(json) - used, "{\"matches\":[");
     for (int i = 0; i < 15; i++) {
@@ -260,7 +262,7 @@ static void test_feed_caps_live_and_upcoming(void) {
             "\"team_A\":{\"name\":\"主队\",\"fs\":0},\"team_B\":{\"name\":\"客队\",\"fs\":0}}",
             i == 0 ? "" : ",", i, i + 1, (long long)NOW_UTC);
     }
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 30; i++) {
         used += (size_t)snprintf(
             json + used, sizeof(json) - used,
             ",{\"match_id\":\"F%d\",\"status\":\"Fixture\",\"cmp_type\":\"soccer\","
@@ -275,11 +277,12 @@ static void test_feed_caps_live_and_upcoming(void) {
     app_feed_init(&feed, &list, NOW_UTC);
     feed_in_chunks(&feed, json, 97);
 
-    assert(feed.live_kept == 10);
-    assert(feed.upcoming_kept == 10);
+    assert(feed.live_kept == 6);
+    assert(feed.upcoming_kept == 20);
     assert(feed.finished_kept == 0);
     // 分类上限之和不超过列表容量,所以不会出现"先收进来的把后面的挤掉"。
-    assert(list.count == 20);
+    assert(list.count == 26);
+    assert(feed.live_cap + feed.upcoming_cap + feed.finished_cap == APP_MAX_MATCHES);
 }
 
 static void test_feed_dedupes_across_chunks(void) {
@@ -412,6 +415,117 @@ static void test_no_time_filter_without_now(void) {
     assert(list.count == 2);
 }
 
+// 回看前日:target_day = -1。整份响应都是昨天,全是已完场。
+//
+// 这里守着两个曾经出过问题的地方:
+//   · 完场名额。以前是 4,而欧冠一个比赛日就有 9~10 场落在凌晨,用户白天
+//     打开只看得到 4 场——"凌晨的比赛没显示"的一半原因就在这。
+//   · 直播不该混进回看列表。昨天的比赛不可能还在踢,但上游数据脏的时候
+//     会给个 Playing,那种条目必须挡在外面。
+static void test_feed_replay_day(void) {
+    const long long yesterday = NOW_UTC - 86400;
+    char json[8192];
+    size_t used = 0;
+    used += (size_t)snprintf(json + used, sizeof(json) - used, "{\"matches\":[");
+
+    // 昨天 10 场已完场(模拟欧冠凌晨那一批)。
+    for (int i = 0; i < 10; i++) {
+        used += (size_t)snprintf(
+            json + used, sizeof(json) - used,
+            "%s{\"match_id\":\"Y%d\",\"status\":\"Played\",\"period\":\"FT\",\"minute\":90,"
+            "\"cmp_type\":\"soccer\",\"match_timestamp\":%lld,"
+            "\"competition\":{\"name\":\"欧冠\"},"
+            "\"team_A\":{\"name\":\"主队%d\",\"fs\":2},\"team_B\":{\"name\":\"客队%d\",\"fs\":1}}",
+            i == 0 ? "" : ",", i, yesterday + i * 900, i, i);
+    }
+    // 昨天那条"脏"的直播:必须丢。
+    used += (size_t)snprintf(
+        json + used, sizeof(json) - used,
+        ",{\"match_id\":\"Y99\",\"status\":\"Playing\",\"period\":\"1H\",\"minute\":10,"
+        "\"cmp_type\":\"soccer\",\"match_timestamp\":%lld,"
+        "\"competition\":{\"name\":\"欧冠\"},"
+        "\"team_A\":{\"name\":\"脏\"},\"team_B\":{\"name\":\"数据\"}}", yesterday);
+    // 今天的比赛:回看视图里也要丢。
+    used += (size_t)snprintf(
+        json + used, sizeof(json) - used,
+        ",{\"match_id\":\"T1\",\"status\":\"Played\",\"period\":\"FT\",\"minute\":90,"
+        "\"cmp_type\":\"soccer\",\"match_timestamp\":%lld,"
+        "\"competition\":{\"name\":\"英超\"},"
+        "\"team_A\":{\"name\":\"今天\"},\"team_B\":{\"name\":\"的\"}}", NOW_UTC);
+    snprintf(json + used, sizeof(json) - used, "]}");
+
+    app_match_list_t list;
+    app_feed_t feed;
+    app_feed_init(&feed, &list, NOW_UTC);
+    app_feed_set_day(&feed, -1);
+    feed_in_chunks(&feed, json, 83);
+
+    // 10 场昨天的完场全留下——这正是旧上限 4 挡掉的那批。
+    assert(list.count == 10);
+    assert(feed.finished_kept == 10);
+    assert(feed.live_kept == 0);
+    assert(feed.upcoming_kept == 0);
+    for (size_t i = 0; i < list.count; i++) {
+        assert(strcmp(list.items[i].id, "Y99") != 0);
+        assert(strcmp(list.items[i].id, "T1") != 0);
+        assert(list.items[i].state == APP_STATE_FULL_TIME);
+        assert(strcmp(list.items[i].league, "欧冠") == 0);
+    }
+}
+
+// 补凌晨段用的 append 模式:不清空已有列表,而且只收完场。
+//
+// 现场是这样:先拉 match_list(直播 + 未开始),再补一份 schedule_list 的
+// "今天 00:00 起 24 小时"。第二份里也有未开始和直播,但那些第一份已经拿到
+// 了,再收一遍只会把完场的名额抢走。
+static void test_feed_append_keeps_existing(void) {
+    char first[2048];
+    snprintf(first, sizeof(first), "{\"matches\":[%s,%s]}", LIVE_OBJECT, FIXTURE_OBJECT);
+
+    app_match_list_t list;
+    app_feed_t feed;
+    app_feed_init(&feed, &list, NOW_UTC);
+    feed_in_chunks(&feed, first, 61);
+    assert(list.count == 2);
+
+    // 第二份:一场昨天的完场(凌晨段)+ 一场今天的直播 + 一场今天的未开始。
+    char extra[2048];
+    snprintf(extra, sizeof(extra),
+             "{\"matches\":["
+             "{\"match_id\":\"E1\",\"status\":\"Played\",\"period\":\"FT\",\"minute\":90,"
+             "\"cmp_type\":\"soccer\",\"match_timestamp\":%lld,"
+             "\"competition\":{\"name\":\"欧冠\"},"
+             "\"team_A\":{\"name\":\"皇马\",\"fs\":4},\"team_B\":{\"name\":\"莱比锡\",\"fs\":1}},"
+             "{\"match_id\":\"E2\",\"status\":\"Playing\",\"period\":\"1H\",\"minute\":5,"
+             "\"cmp_type\":\"soccer\",\"match_timestamp\":%lld,"
+             "\"competition\":{\"name\":\"英超\"},"
+             "\"team_A\":{\"name\":\"不该进\"},\"team_B\":{\"name\":\"来\"}},"
+             "{\"match_id\":\"E3\",\"status\":\"Fixture\",\"cmp_type\":\"soccer\","
+             "\"match_timestamp\":%lld,\"competition\":{\"name\":\"西甲\"},"
+             "\"team_A\":{\"name\":\"也不该进\"},\"team_B\":{\"name\":\"来\"}}"
+             "]}",
+             (long long)(NOW_UTC - 3600), (long long)NOW_UTC,
+             (long long)(NOW_UTC + 3600));
+
+    app_feed_init_append(&feed, &list, NOW_UTC);
+    feed_in_chunks(&feed, extra, 37);
+
+    // 原来那两场还在,外加凌晨那场完场。
+    assert(list.count == 3);
+    assert(feed.finished_kept == 1);
+    assert(feed.live_kept == 0);
+    assert(feed.upcoming_kept == 0);
+
+    app_match_list_sort(&list);
+    bool has_e1 = false;
+    for (size_t i = 0; i < list.count; i++) {
+        assert(strcmp(list.items[i].id, "E2") != 0);
+        assert(strcmp(list.items[i].id, "E3") != 0);
+        if (strcmp(list.items[i].id, "E1") == 0) has_e1 = true;
+    }
+    assert(has_e1);
+}
+
 int main(void) {
     test_parse_live_object();
     test_parse_fixture_object();
@@ -425,6 +539,8 @@ int main(void) {
     test_feed_caps_live_and_upcoming();
     test_feed_dedupes_across_chunks();
     test_feed_target_day();
+    test_feed_replay_day();
+    test_feed_append_keeps_existing();
     test_truncated_tail_is_dropped();
     test_garbage_input();
     test_no_time_filter_without_now();

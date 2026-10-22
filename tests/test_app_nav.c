@@ -25,24 +25,60 @@ static void test_selection_moves_and_clamps(void) {
     assert(app_nav_handle(&nav, APP_INPUT_DOWN, 3, ROWS) == APP_ACT_REDRAW);
     assert(nav.sel == 2);
 
-    // 到底了:状态不变,界面不需要重画。
-    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 3, ROWS) == APP_ACT_NONE);
-    assert(nav.sel == 2);
+    // 到底了:选中项不再动,再按一下就是"翻日期"(见 test_day_flip_at_edges)。
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 3, ROWS) == APP_ACT_DAY_NEXT);
 
-    assert(app_nav_handle(&nav, APP_INPUT_UP, 3, ROWS) == APP_ACT_REDRAW);
+    // 翻日期会把选中项复位,往回走的这一段从 0 重新开始。
+    assert(nav.sel == 0);
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 3, ROWS) == APP_ACT_REDRAW);
     assert(nav.sel == 1);
     assert(app_nav_handle(&nav, APP_INPUT_UP, 3, ROWS) == APP_ACT_REDRAW);
     assert(nav.sel == 0);
-    assert(app_nav_handle(&nav, APP_INPUT_UP, 3, ROWS) == APP_ACT_NONE);
+    assert(app_nav_handle(&nav, APP_INPUT_UP, 3, ROWS) == APP_ACT_DAY_PREV);
     assert(nav.sel == 0);
 }
 
-static void test_empty_list_ignores_updown(void) {
+// 比分页翻到头再按一次 = 翻日期。这个入口没有独立按键,全靠这两条边界。
+static void test_day_flip_at_edges(void) {
     app_nav_t nav;
     app_nav_init(&nav);
 
-    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 0, ROWS) == APP_ACT_NONE);
-    assert(app_nav_handle(&nav, APP_INPUT_UP, 0, ROWS) == APP_ACT_NONE);
+    // 首项按上:回看前一日,并且把选中项和窗口都复位(换了一份列表)。
+    nav.sel = 0;
+    nav.scroll = 0;
+    assert(app_nav_handle(&nav, APP_INPUT_UP, 8, ROWS) == APP_ACT_DAY_PREV);
+    assert(nav.sel == 0);
+
+    // 末项按下:回到后一日。
+    nav.sel = 7;
+    nav.scroll = 3;
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 8, ROWS) == APP_ACT_DAY_NEXT);
+    assert(nav.sel == 0);
+    assert(nav.scroll == 0);
+
+    // 中间位置按上下仍旧只是移动选中项,不会误翻日期。
+    nav.sel = 4;
+    assert(app_nav_handle(&nav, APP_INPUT_UP, 8, ROWS) == APP_ACT_REDRAW);
+    assert(nav.sel == 3);
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 8, ROWS) == APP_ACT_REDRAW);
+    assert(nav.sel == 4);
+
+    // 别的页面没有"翻日期"这回事:设置页和热点页走到头还是什么都不做。
+    nav.page = APP_PAGE_SETTINGS;
+    nav.sel = 0;
+    assert(app_nav_handle(&nav, APP_INPUT_UP, 8, ROWS) == APP_ACT_NONE);
+    nav.page = APP_PAGE_WIFI_LIST;
+    nav.sel = 7;
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 8, ROWS) == APP_ACT_NONE);
+}
+
+static void test_empty_list_still_allows_day_flip(void) {
+    app_nav_t nav;
+    app_nav_init(&nav);
+
+    // 列表为空时两个方向都放行 —— 否则"今天一场都没有"的日子根本进不去回看。
+    assert(app_nav_handle(&nav, APP_INPUT_DOWN, 0, ROWS) == APP_ACT_DAY_NEXT);
+    assert(app_nav_handle(&nav, APP_INPUT_UP, 0, ROWS) == APP_ACT_DAY_PREV);
     assert(nav.sel == 0);
     assert(nav.scroll == 0);
 
@@ -85,7 +121,8 @@ static void test_scroll_clamped_when_list_shrinks(void) {
     app_nav_init(&nav);
 
     // 先滚到窗口末尾(12 条 → scroll=7),数据刷新后只剩 6 条。
-    for (int i = 0; i < 12; i++) (void)app_nav_handle(&nav, APP_INPUT_DOWN, 12, ROWS);
+    // 只按 11 下:第 12 下会撞上末项的"翻日期",把选中项复位。
+    for (int i = 0; i < 11; i++) (void)app_nav_handle(&nav, APP_INPUT_DOWN, 12, ROWS);
     assert(nav.sel == 11);
     assert(nav.scroll == 7);
 
@@ -220,7 +257,8 @@ static void test_null_nav(void) {
 int main(void) {
     test_init();
     test_selection_moves_and_clamps();
-    test_empty_list_ignores_updown();
+    test_day_flip_at_edges();
+    test_empty_list_still_allows_day_flip();
     test_scroll_window_follows_selection();
     test_scroll_clamped_when_list_shrinks();
     test_ok_actions_per_page();

@@ -74,11 +74,13 @@ static const char *TAG = "app_ui";
 #define BANNER_H 22
 #define LIST_Y0_BANNER 28
 
-// 设置行:38 px 高、42 px 间距,6 行(6 + 5*42 + 38 = 254 < 256)。
-// 加了「手机配网」之后从 5 行变 6 行,行高从 40 收到 38 才塞得下。
-#define SET_ROW_H 38
-#define SET_ROW_PITCH 42
-#define SET_ROW_Y0 6
+// 设置行:29 px 高、31 px 间距,8 行(3 + 7*31 + 29 = 249 < 256)。
+// 从 6 行加到 8 行(多了「自动息屏」和「屏幕亮度」),行高只能从 38 收到 29;
+// 19 px 的字放进 29 px 的行里还剩 5 px 上下留白,触摸不到但看着不挤。
+#define SET_ROW_H 29
+#define SET_ROW_PITCH 31
+#define SET_ROW_Y0 3
+#define SET_ROW_TEXT_Y 5
 
 // 热点行:44 px 高、46 px 间距,5 行(4 + 4*46 + 44 = 232 < 256)。
 #define AP_ROW_H 44
@@ -108,9 +110,9 @@ static const char *TAG = "app_ui";
 #define STAT_ROW_PITCH 24
 #define STAT_ROW_Y0 48
 
-// 长时间无操作后把背光压下去,这是一块电池供电的可穿戴设备。
-#define IDLE_DIM_TICKS 120      // 2 分钟(定时器 1s)
-#define IDLE_DIM_PERCENT 18
+// 长时间无操作后的背光处理统一由 main.c 的 app_idle 任务负责(它才知道
+// 「自动息屏」和「屏幕亮度」这两个设置)。界面这边不再自己压背光,否则
+// 每次按键都把亮度写回 100%,用户设的 25% 会立刻失效。
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_body;
@@ -126,8 +128,13 @@ static app_snapshot_t s_snap;      // 界面自己的快照副本
 static uint32_t s_seen_revision;
 static int s_battery_soc = -1;
 static bool s_config_dirty;
-static int s_idle_ticks;
-static bool s_dimmed;
+
+// 设置页 8 行的句柄。翻行时只改这 8 行的颜色,不重建整页——重建一次要
+// 删掉再建 30 多个对象,是菜单"跟不上手指"的另一半原因。
+static lv_obj_t *s_set_rows[APP_SET_ROW_COUNT];
+static lv_obj_t *s_set_bars[APP_SET_ROW_COUNT];
+static lv_obj_t *s_set_labels[APP_SET_ROW_COUNT];
+static lv_obj_t *s_set_values[APP_SET_ROW_COUNT];
 
 // 临时提示(如"正在连接…")。缓冲按最长的一条留够,免得编译器抱怨截断。
 static char s_toast[48];
@@ -352,17 +359,22 @@ static void build_banner(void) {
         snprintf(right, sizeof(right), "%s · 还有 %d 天", date, (int)s_snap.day_offset);
     }
 
-    clipped_text(bar, APP_FONT_SMALL, C_MUTED, "下一个比赛日", 8, 3, 70, 16,
+    // 宽度要给"字宽 + 省略号"留够:DOTS 模式先扣掉省略号那一格再排字,
+    // 五个 12 px 汉字是 60 px,给 70 只剩 58,于是永远显示成「下一个比…」。
+    clipped_text(bar, APP_FONT_SMALL, C_MUTED, "下一个比赛日", 8, 3, 76, 16,
                  LV_TEXT_ALIGN_LEFT);
-    clipped_text(bar, APP_FONT_SMALL, C_AMBER, right, 78, 3, SCR_W - 94, 16,
+    clipped_text(bar, APP_FONT_SMALL, C_AMBER, right, 84, 3, SCR_W - 100, 16,
                  LV_TEXT_ALIGN_RIGHT);
 }
 
 static void build_empty_state(void) {
-    // 默认文案解释"为什么是空的":看板只收当天 + 七项赛事,
+    // 默认文案解释"为什么是空的":看板只收当天 + 九项赛事,
     // 用户看到空列表时要能立刻明白这是筛选结果,不是没联网。
     const char *title = "今天暂无比赛";
-    const char *why = "只显示五大联赛、中超、中甲";
+    const char *why = "只显示五大联赛、中超中甲、欧冠欧联";
+    // 32 字节:"%s 没有比赛" 里的 %s 最坏是 15 字节的 date,GCC 按最坏情况
+    // 算要 29 字节,给 24 会直接 -Werror=format-truncation 编译失败。
+    char replay_title[32];
 
     switch (s_snap.state) {
         case APP_NET_OFF:
@@ -378,7 +390,11 @@ static void build_empty_state(void) {
             why = "TLS 需要正确的系统时间";
             break;
         case APP_NET_FETCHING:
-            title = "正在拉取比分";
+            // 翻页是用户主动切过去的,得说清"在拉哪一天",否则和普通刷新
+            // 看起来一样,用户会以为按错了。
+            if (s_snap.view_day < 0) title = "正在拉取前日比分";
+            else if (s_snap.view_day > 0) title = "正在拉取未来赛程";
+            else title = "正在拉取比分";
             why = "首次加载约需几秒";
             break;
         case APP_NET_ERROR:
@@ -387,6 +403,19 @@ static void build_empty_state(void) {
             break;
         default:
             break;
+    }
+
+    // 翻到别的日子时,"空"和今天不是一回事:不是"还没到比赛日",而是"那一天
+    // 这几项赛事没有比赛"。标题直接带上日期。
+    if (s_snap.view_day != 0 && s_snap.state == APP_NET_READY) {
+        char date[16] = "--";
+        app_datetime_t dt;
+        if (app_datetime_from_utc(
+                app_cst_day_start(s_snap.updated_at, s_snap.view_day), &dt)) {
+            snprintf(date, sizeof(date), "%d-%02d", dt.month, dt.day);
+        }
+        snprintf(replay_title, sizeof(replay_title), "%s 没有比赛", date);
+        title = replay_title;
     }
 
     // 这两条要压过状态机文案,所以放在 switch 之后:
@@ -759,6 +788,14 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
         case APP_SET_ROW_INTERVAL:
             snprintf(value, cap, "%u 秒", (unsigned)s_cfg.refresh_seconds);
             break;
+        case APP_SET_ROW_SCREEN_OFF:
+            // 0 是"常亮"而不是"0 秒",这一档要说人话。
+            if (s_cfg.screen_off_seconds == 0) snprintf(value, cap, "常亮");
+            else snprintf(value, cap, "%u 秒", (unsigned)s_cfg.screen_off_seconds);
+            break;
+        case APP_SET_ROW_BRIGHTNESS:
+            snprintf(value, cap, "%u%%", (unsigned)s_cfg.brightness_percent);
+            break;
         case APP_SET_ROW_REFRESH:
         case APP_SET_ROW_CLEAR:
             snprintf(value, cap, "OK 执行");
@@ -769,9 +806,33 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
     }
 }
 
+// 只改选中态,不重建对象。翻行走这条路:改 8 行颜色是几十微秒的事,
+// 而重建整页要删掉再新建 30 多个对象、再全屏重绘一遍。
+static void settings_select(int sel) {
+    for (int row = 0; row < APP_SET_ROW_COUNT; row++) {
+        const bool on = (row == sel);
+        if (s_set_rows[row] != NULL) {
+            lv_obj_set_style_bg_color(s_set_rows[row],
+                                      lv_color_hex(on ? C_PANEL_HI : C_PANEL), 0);
+        }
+        if (s_set_bars[row] != NULL) {
+            lv_obj_set_style_bg_opa(s_set_bars[row], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        }
+        if (s_set_labels[row] != NULL) {
+            lv_obj_set_style_text_color(s_set_labels[row],
+                                        lv_color_hex(on ? C_TEXT : C_TEAM), 0);
+        }
+        if (s_set_values[row] != NULL) {
+            lv_obj_set_style_text_color(s_set_values[row],
+                                        lv_color_hex(on ? C_ACCENT : C_MUTED), 0);
+        }
+    }
+}
+
 static void build_settings(void) {
     static const char *const LABELS[APP_SET_ROW_COUNT] = {
-        "Wi-Fi 配网", "手机配网", "网络地址", "刷新间隔", "立即刷新", "清除配网",
+        "Wi-Fi 配网", "手机配网", "网络地址", "刷新间隔",
+        "自动息屏", "屏幕亮度", "立即刷新", "清除配网",
     };
 
     for (int row = 0; row < APP_SET_ROW_COUNT; row++) {
@@ -779,17 +840,23 @@ static void build_settings(void) {
         const bool selected = (row == s_nav.sel);
         lv_obj_t *item = panel(s_body, 10, y, SCR_W - 20, SET_ROW_H,
                                selected ? C_PANEL_HI : C_PANEL, 8);
-        if (selected) {
-            (void)panel(item, 0, 7, 3, SET_ROW_H - 14, C_ACCENT, 2);
+        s_set_rows[row] = item;
+        // 左侧那根 3 px 的高亮条一直建出来,只是不选中时透明。翻行时改
+        // 不透明度,比每次删了重建省一次分配(见 settings_select)。
+        s_set_bars[row] = item ? panel(item, 0, 7, 3, SET_ROW_H - 14, C_ACCENT, 2) : NULL;
+        if (s_set_bars[row] != NULL) {
+            lv_obj_set_style_bg_opa(s_set_bars[row], selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         }
 
         char value[40];
         settings_row_text((app_set_row_t)row, value, sizeof(value));
 
-        clipped_text(item, APP_FONT_BODY, selected ? C_TEXT : C_TEAM, LABELS[row], 10, 10, 96,
-                     20, LV_TEXT_ALIGN_LEFT);
-        clipped_text(item, APP_FONT_BODY, selected ? C_ACCENT : C_MUTED, value, 108, 10, 100,
-                     20, LV_TEXT_ALIGN_RIGHT);
+        s_set_labels[row] = clipped_text(item, APP_FONT_BODY,
+                                         selected ? C_TEXT : C_TEAM, LABELS[row], 10,
+                                         SET_ROW_TEXT_Y, 96, 20, LV_TEXT_ALIGN_LEFT);
+        s_set_values[row] = clipped_text(item, APP_FONT_BODY,
+                                         selected ? C_ACCENT : C_MUTED, value, 108,
+                                         SET_ROW_TEXT_Y, 100, 20, LV_TEXT_ALIGN_RIGHT);
     }
 }
 
@@ -1142,6 +1209,7 @@ static void update_title(void) {
 
     const char *value = "比赛看板";
     char league[APP_NAME_LEN];
+    char day_label[40];
 
     switch (s_nav.page) {
         case APP_PAGE_DETAIL:
@@ -1162,6 +1230,27 @@ static void update_title(void) {
             break;
         case APP_PAGE_SCORES:
         default:
+            // 翻到别的日子时标题直接换成日期。只在页头挂个小角标不够:看板是
+            // "扫一眼就走"的设备,用户很容易把昨天的比分当成今天的。
+            if (s_snap.view_day != 0) {
+                char date[16] = "--";
+                app_datetime_t dt;
+                if (app_datetime_from_utc(
+                        app_cst_day_start(s_snap.updated_at, s_snap.view_day), &dt)) {
+                    snprintf(date, sizeof(date), "%d-%02d", dt.month, dt.day);
+                }
+                if (s_snap.view_day < 0) {
+                    snprintf(day_label, sizeof(day_label), "回看 %s", date);
+                } else if (s_snap.view_day == 1) {
+                    snprintf(day_label, sizeof(day_label), "明天 %s", date);
+                } else if (s_snap.view_day == 2) {
+                    snprintf(day_label, sizeof(day_label), "后天 %s", date);
+                } else {
+                    snprintf(day_label, sizeof(day_label), "%d 天后 %s",
+                             (int)s_snap.view_day, date);
+                }
+                value = day_label;
+            }
             break;
     }
     lv_label_set_text(s_title, value);
@@ -1174,6 +1263,11 @@ static void build_body(void) {
     // 已经释放的对象上。
     memset(s_kb_keys, 0, sizeof(s_kb_keys));
     s_kb_field = NULL;
+    // 设置页的行句柄也挂在 s_body 下,clean 之后一并作废。
+    memset(s_set_rows, 0, sizeof(s_set_rows));
+    memset(s_set_bars, 0, sizeof(s_set_bars));
+    memset(s_set_labels, 0, sizeof(s_set_labels));
+    memset(s_set_values, 0, sizeof(s_set_values));
     lv_obj_clean(s_body);
 
     switch (s_nav.page) {
@@ -1227,6 +1321,16 @@ static void handle_setting(int row) {
             return;
         case APP_SET_ROW_INTERVAL:
             app_config_cycle_refresh(&cfg);
+            app_settings_apply(&cfg, false);
+            s_cfg = cfg;
+            break;
+        case APP_SET_ROW_SCREEN_OFF:
+            app_config_cycle_screen_off(&cfg);
+            app_settings_apply(&cfg, false);
+            s_cfg = cfg;
+            break;
+        case APP_SET_ROW_BRIGHTNESS:
+            app_config_cycle_brightness(&cfg);
             app_settings_apply(&cfg, false);
             s_cfg = cfg;
             break;
@@ -1307,11 +1411,6 @@ static void on_tick(lv_timer_t *timer) {
     if (dirty) build_body();
 
     update_header();
-
-    if (++s_idle_ticks == IDLE_DIM_TICKS && !s_dimmed) {
-        bsp_display_backlight(IDLE_DIM_PERCENT);
-        s_dimmed = true;
-    }
 }
 
 // ---------------------------------------------------------------- 对外接口
@@ -1333,6 +1432,21 @@ static void handle_keyboard_input(app_input_t input) {
     refresh_keyboard();
 }
 
+// 切换日期视图(0 = 今天,-1 = 回看前一天,1..7 = 未来第 N 天)。
+//
+// 联网层会立刻把快照的 view_day 改掉、清空旧列表并压成"正在拉取",所以这里
+// 同步一份快照再重画,屏幕上是"回看 MM-DD / 明天 MM-DD + 正在拉取",而不是
+// 旧日期那批比赛。拉到之后由定时器按 revision 变化重画。
+static void switch_day(int8_t day) {
+    app_net_set_view_day(day);
+    app_net_snapshot_copy(&s_snap);
+    s_seen_revision = s_snap.revision;
+    s_nav.sel = 0;
+    s_nav.scroll = 0;
+    update_title();
+    build_body();
+}
+
 void app_ui_handle_input(app_input_t input) {
     // 重建密码页要一口气建 84 个对象,LVGL 任务会短暂占着锁。300 ms 偏紧:
     // 拿不到锁就等于把这次按键丢掉,用户看到的就是"按键没反应"。
@@ -1342,11 +1456,7 @@ void app_ui_handle_input(app_input_t input) {
     }
 
     // 有按键就先把背光提回来,再处理动作。
-    if (s_dimmed) {
-        bsp_display_backlight(100);
-        s_dimmed = false;
-    }
-    s_idle_ticks = 0;
+    // 息屏/点亮由 main.c 的按键回调统一处理,这里不再碰背光。
 
     const app_act_t action = app_nav_handle(&s_nav, input, current_item_count(),
                                            visible_rows());
@@ -1360,7 +1470,15 @@ void app_ui_handle_input(app_input_t input) {
 
     switch (action) {
         case APP_ACT_PAGE_CHANGED:
+            build_body();
+            break;
         case APP_ACT_REDRAW:
+            // 设置页里上下翻行只是换了选中项:直接改颜色,不重建。
+            // 其它页面的 REDRAW 一律走整页重建。
+            if (s_nav.page == APP_PAGE_SETTINGS && s_set_rows[0] != NULL) {
+                settings_select((int)s_nav.sel);
+                break;
+            }
             build_body();
             break;
         case APP_ACT_SETTING:
@@ -1403,12 +1521,24 @@ void app_ui_handle_input(app_input_t input) {
         case APP_ACT_PORTAL_BACK:
             leave_portal();
             break;
+        case APP_ACT_DAY_PREV:
+            // 翻到头就不再动:最早只回看到前一天。
+            if (s_snap.view_day > APP_VIEW_DAY_MIN) {
+                switch_day((int8_t)(s_snap.view_day - 1));
+            }
+            break;
+        case APP_ACT_DAY_NEXT:
+            // 往后可以一直翻到第 7 天,和"下一个比赛日"探测的上限一致。
+            if (s_snap.view_day < APP_VIEW_DAY_MAX) {
+                switch_day((int8_t)(s_snap.view_day + 1));
+            }
+            break;
         case APP_ACT_NONE:
         default:
             // 比分页列表为空时按 OK:导航层不会给动作,这里补一句提示,
             // 否则按下去屏幕毫无变化,像是按键坏了。
             if (input == APP_INPUT_OK && s_nav.page == APP_PAGE_SCORES) {
-                toast("今天暂无比赛");
+                toast(s_snap.view_day != 0 ? "这天没有比赛" : "今天暂无比赛");
                 update_footer();
             }
             break;

@@ -201,7 +201,7 @@ static void test_day_offset(void) {
 }
 
 static void test_league_whitelist(void) {
-    // 五大联赛 + 中超 + 中甲。
+    // 五大联赛 + 中超 + 中甲 + 欧战两项。
     assert(app_league_allowed("英超"));
     assert(app_league_allowed("西甲"));
     assert(app_league_allowed("意甲"));
@@ -209,18 +209,26 @@ static void test_league_whitelist(void) {
     assert(app_league_allowed("法甲"));
     assert(app_league_allowed("中超"));
     assert(app_league_allowed("中甲"));
+    assert(app_league_allowed("欧冠"));
+    assert(app_league_allowed("欧联"));
 
     // 接口偶尔给带后缀的写法,去掉"联赛"后应当照样命中。
     assert(app_league_allowed("英超联赛"));
     assert(app_league_allowed("中超联赛"));
+    assert(app_league_allowed("欧冠联赛"));
 
     // 其它赛事一律不收。
     assert(!app_league_allowed("英冠"));
-    assert(!app_league_allowed("欧冠"));
     assert(!app_league_allowed("中乙"));
     assert(!app_league_allowed("巴甲"));
     assert(!app_league_allowed("葡超"));
     assert(!app_league_allowed("NBA"));
+    // 名字里带"欧"或"冠"的邻居赛事不能被全等匹配放过:欧协联(Conference
+    // League)、女足欧冠、欧青联、亚冠精英都不是欧冠。
+    assert(!app_league_allowed("欧协联"));
+    assert(!app_league_allowed("女足欧冠"));
+    assert(!app_league_allowed("欧青联"));
+    assert(!app_league_allowed("亚冠精英"));
     // "巴西甲级联赛"里含"西甲"三个字,但不能被当成西甲(这正是用全等而不是
     // 子串匹配的原因)。
     assert(!app_league_allowed("巴西甲级联赛"));

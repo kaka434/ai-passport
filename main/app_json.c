@@ -264,18 +264,62 @@ static void feed_accept(app_feed_t *feed, const app_match_t *match) {
     (void)app_match_list_upsert(feed->out, match);
 }
 
+// 按目标日分配三类名额,三者之和恒等于 APP_MAX_MATCHES。
+//
+//   今天(0)   —— 直播 6 / 未开始 20 / 完场 14。完场必须给到十几场:
+//                欧冠一个比赛日就有 9~10 场落在凌晨,按旧的 4 场上限,
+//                用户白天打开只看得到 4 场,这就是"凌晨的比赛没显示"的第二层原因。
+//   未来日(>0) —— 整份响应都是那一天且全是未开始,名额全给它。
+//   前日(<0)   —— 全是完场,直播和未开始一个都不要(昨天的比赛不可能还在踢,
+//                万一上游数据脏了给了个 Playing,也不该混进回看列表)。
+#define TODAY_LIVE_CAP 6
+#define TODAY_UPCOMING_CAP 20
+#define TODAY_FINISHED_CAP (APP_MAX_MATCHES - TODAY_LIVE_CAP - TODAY_UPCOMING_CAP)
+
+static void feed_apply_day_caps(app_feed_t *feed, int target_day) {
+    if (target_day > 0) {
+        feed->live_cap = 0;
+        feed->upcoming_cap = APP_MAX_MATCHES;
+        feed->finished_cap = 0;
+    } else if (target_day < 0) {
+        feed->live_cap = 0;
+        feed->upcoming_cap = 0;
+        feed->finished_cap = APP_MAX_MATCHES;
+    } else {
+        feed->live_cap = TODAY_LIVE_CAP;
+        feed->upcoming_cap = TODAY_UPCOMING_CAP;
+        feed->finished_cap = TODAY_FINISHED_CAP;
+    }
+}
+
 void app_feed_init(app_feed_t *feed, app_match_list_t *out, int64_t now_utc) {
     if (feed == NULL) return;
     memset(feed, 0, sizeof(*feed));
     feed->out = out;
     feed->now_utc = now_utc;
-    feed->target_day = 0;   // 默认看今天;拉未来赛程时由调用方改成 1..7
-    // 10 + 10 + 4 = 24 = APP_MAX_MATCHES:任何顺序收流都不会把列表撑爆,
-    // 也不会出现"完场占满、未开始的反而进不来"。
-    feed->live_cap = 10;
-    feed->upcoming_cap = 10;
-    feed->finished_cap = 4;
+    feed->target_day = 0;   // 默认看今天;拉未来赛程/回看前日时再改
+    feed_apply_day_caps(feed, 0);
     app_match_list_reset(out);
+}
+
+void app_feed_set_day(app_feed_t *feed, int target_day) {
+    if (feed == NULL) return;
+    feed->target_day = target_day;
+    feed_apply_day_caps(feed, target_day);
+}
+
+void app_feed_init_append(app_feed_t *feed, app_match_list_t *out, int64_t now_utc) {
+    if (feed == NULL) return;
+    memset(feed, 0, sizeof(*feed));
+    feed->out = out;
+    feed->now_utc = now_utc;
+    feed->target_day = 0;
+    // 只补完场。直播和未开始 match_list 那份已经拿到了,这里再来一遍只会
+    // 把完场的名额抢走。
+    feed->live_cap = 0;
+    feed->upcoming_cap = 0;
+    feed->finished_cap = APP_MAX_MATCHES;
+    // 不清空 out:调用方要的正是"并进已有列表"。
 }
 
 static void feed_start_object(app_feed_t *feed) {

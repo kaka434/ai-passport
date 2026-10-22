@@ -92,6 +92,24 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
     }
 
     if (input == APP_INPUT_UP || input == APP_INPUT_DOWN) {
+        // 比分页翻到头再按一次 = 翻日期:首项按上往前一天,末项按下往后一天。
+        // 列表为空时两个方向都放行——否则"今天一场都没有"的日子根本进不去
+        // 回看,也翻不到后面几天。
+        //
+        // 这里只负责发出"想翻日期"的意图,到底能翻到哪天(最早前一天、最晚
+        // 第七天)由界面根据当前视图夹取,导航层不持有日期状态。
+        if (nav->page == APP_PAGE_SCORES) {
+            const bool at_top = (input == APP_INPUT_UP)
+                                && (item_count == 0 || nav->sel == 0);
+            const bool at_bottom = (input == APP_INPUT_DOWN)
+                                   && (item_count == 0 || nav->sel >= item_count - 1);
+            if (at_top || at_bottom) {
+                // 换了日期就是换了一份列表,选中项和滚动窗口都要归零。
+                app_nav_reset_selection(nav);
+                return at_top ? APP_ACT_DAY_PREV : APP_ACT_DAY_NEXT;
+            }
+        }
+
         if (item_count == 0) return APP_ACT_NONE;
         const int before = nav->sel;
         nav->sel += (input == APP_INPUT_UP) ? -1 : 1;

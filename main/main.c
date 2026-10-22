@@ -146,9 +146,44 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         return;
     }
 
-    if (!s_input_ready || s_input_queue == NULL) return;
-    if (ev != BSP_BTN_CLICK && ev != BSP_BTN_LONG) return;
+    // 任何一次按键都算"有操作",把息屏倒计时推后。放在守卫之后:被守卫
+    // 吞掉的唤醒键松手不该算用户操作。
+    s_last_input_us = esp_timer_get_time();
 
+    // 息屏时第一下按键只负责点亮,不交给界面。否则用户看不到屏幕已经亮,
+    // 会再按一次,那一下就把页面翻走了。
+    if (s_screen_off) {
+        if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) screen_wake();
+        return;
+    }
+
+    if (!s_input_ready || s_input_queue == NULL) return;
+
+    // 上下键走"按下即响应",不等 click。
+    //
+    // iot_button 的单击是在**松手之后**再等一个 short_press_time(本板 180 ms)
+    // 的双击判定窗口才发出来的,所以每次翻行都固定慢 180 ms;更糟的是连按两下
+    // 会被 repeat 计数并成 BUTTON_DOUBLE_CLICK,而双击我们没注册处理,那两下
+    // 就整个丢了——手感就是"按了没反应,再按又跳两格"。按下事件只有 2×5 ms
+    // 的消抖延迟,菜单跟手的问题在这里解决。
+    if (ev == BSP_BTN_PRESS) {
+        if (btn == BSP_BTN_OK) return;   // OK 要区分长按,仍旧走 click/long
+        const input_event_t input = { .btn = btn, .event = BSP_BTN_PRESS };
+        (void)xQueueSend(s_input_queue, &input, 0);
+        return;
+    }
+
+    // 上下键的 click/double 已经没用了(按下时处理过),再处理一次会走两格。
+    if (btn != BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_DOUBLE)) return;
+
+    // OK 的双击同样没人接:当成两次独立动作没意义,折成一次单击,免得丢键。
+    if (btn == BSP_BTN_OK && ev == BSP_BTN_DOUBLE) {
+        const input_event_t input = { .btn = btn, .event = BSP_BTN_CLICK };
+        (void)xQueueSend(s_input_queue, &input, 0);
+        return;
+    }
+
+    if (ev != BSP_BTN_CLICK && ev != BSP_BTN_LONG) return;
     const input_event_t input = { .btn = btn, .event = ev };
     (void)xQueueSend(s_input_queue, &input, 0);
 }

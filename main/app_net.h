@@ -27,6 +27,11 @@ typedef enum {
 #define APP_NET_ERROR_LEN 64
 #define APP_NET_IP_LEN 16
 
+// 用户可以翻到哪几天:0 = 今天,-1 = 回看前一天,1..7 = 未来第 N 天。
+// 前向给到 7 天,和"下一个比赛日"探测的上限保持一致。
+#define APP_VIEW_DAY_MIN (-1)
+#define APP_VIEW_DAY_MAX 7
+
 typedef struct {
     app_match_list_t matches;    // 直播中 + 接下来要打的比赛(已排好序)
     int64_t updated_at;          // 最近一次成功刷新的 UTC 秒
@@ -35,6 +40,13 @@ typedef struct {
     // 这份列表是哪一天的:0 = 今天,1..7 = 未来第 N 天,-1 = 未来七天都没赛事。
     // 不是 0 的时候界面要在顶部显示"下一个比赛日还有几天"。
     int8_t day_offset;
+    // 用户选的日期:0 = 今天(默认),-1 = 回看前一天,1..7 = 未来第 N 天。
+    //
+    // 和 day_offset 是两件事:day_offset 是"今天一场白名单比赛都没有,自动
+    // 往后找到的那一天";view_day 是用户按上下键翻过去的。翻页时 day_offset
+    // 仍然是 0(它不参与"下一个比赛日"那套逻辑),界面靠 view_day 判断标题
+    // 该写"回看 MM-DD"还是"明天 MM-DD"。
+    int8_t view_day;
     // 今天没有赛事、正在往后找下一个比赛日。探测要连下几份响应,可能几十秒,
     // 界面靠它说"正在查找",而不是让用户对着"暂无比赛"干等。
     bool probing_next_day;
@@ -86,6 +98,17 @@ uint32_t app_net_revision(void);
 
 // 叫醒工作任务立刻刷新,不等下一个周期。
 void app_net_request_refresh(void);
+
+// 切换要看哪一天的比赛:0 = 今天,-1 = 回看前一天,1..7 = 未来第 N 天。
+// 超出 APP_VIEW_DAY_MIN..APP_VIEW_DAY_MAX 的值会被夹到边界。
+//
+// 会立刻唤醒联网任务。非今天的日期拉一次就够(回看的数据永远不变,未来的
+// 赛程也基本不变),不参与 refresh_seconds 的轮询。
+void app_net_set_view_day(int8_t day);
+
+// 当前视图(0 = 今天,-1 = 昨天,1..7 = 未来第 N 天)。
+// 只读一个字节,不用拷整份快照。
+int8_t app_net_view_day(void);
 
 // 确保射频已启动。配网门户要开热点,而"从没配过网"的设备此时 STA 还没起来。
 bool app_net_wifi_ready(void);

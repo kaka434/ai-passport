@@ -52,10 +52,14 @@ bool app_match_is_live(uint8_t state) {
     }
 }
 
-// 只关心这七项赛事。中文联赛名不会互相包含,所以全等比较就够;
+// 只关心这九项赛事。中文联赛名不会互相包含,所以全等比较就够;
 // 但接口有时给"英超联赛"这种带后缀的写法,统一先把尾部"联赛"去掉。
+//
+// 欧战两项按懂球帝的赛事名取:"欧冠"(competition id 6)、"欧联"(id 14)。
+// 注意别用"包含"匹配——"英冠""女足欧冠""欧青联""欧协联"都含"欧"或"冠",
+// 全等比较才能把它们挡在外面。欧协联(Conference League)不在看板范围内。
 static const char *const ALLOWED_LEAGUES[] = {
-    "英超", "西甲", "意甲", "德甲", "法甲", "中超", "中甲",
+    "英超", "西甲", "意甲", "德甲", "法甲", "中超", "中甲", "欧冠", "欧联",
 };
 #define ALLOWED_LEAGUE_COUNT (sizeof(ALLOWED_LEAGUES) / sizeof(ALLOWED_LEAGUES[0]))
 
