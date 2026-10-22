@@ -39,6 +39,23 @@ First release of the football live score board, developed on the
 - Sized TLS, Wi-Fi, lwIP and the LVGL pool from measured values on this board, with
   the measurements recorded in `docs/reference/kaka/`.
 
+## Football Live Board v0.2.0 — 2026-10-22
+
+Also developed on the `feature/football-live-board` branch. This release fixes two
+"cannot see it" problems (early-morning matches, player names) and widens the board
+from "today only" to "page backwards and forwards".
+
+- Fixed the board not showing early-morning matches. The `match_list` feed is anchored on the UTC day, so it never returns the Beijing-time 00:00–07:30 window where Champions League and Europa League early kick-offs live; the board now fetches that window from `schedule_list` and merges it in, deduplicated by match id. `schedule_list` omits in-progress matches entirely, so it supplements `match_list` rather than replacing it. The backfill is throttled: every refresh tops it up before 07:00, because the latest early kick-off may still be running, and once per day after that, which keeps steady-state traffic at 264 KB per refresh.
+- Fixed every player name in the match detail showing as `?`. The detail endpoint escapes all Chinese text as `\uXXXX`, and the escape branch only accepted ASCII, downgrading every other code point to `?`; it now decodes to UTF-8 properly and handles surrogate pairs. Zero-width characters such as U+200B no longer render as a stray question mark.
+- Raised the finished-match cap from 4 to 14 and the row capacity from 24 to 40. A single Champions League match day has nine or ten early-morning fixtures, and a Saturday has 30 whitelisted matches, both of which the old limits truncated.
+- Added day paging on the scores page: press Up on the first row to replay the previous day (header becomes `Replay MM-DD`), press Down on the last row to move forward a day (`Tomorrow MM-DD`), up to seven days ahead. Backfilling the early-morning window means today is no longer empty, which stopped the old "jump to the next match day" fallback from firing; future matches are now reached by paging forward. A day other than today is fetched once and cached, paging back to it downloads nothing, and a result that lands after the user has paged away is dropped instead of flashing the previous list first.
+- Added the Champions League and the Europa League to the league whitelist, bringing the board to nine competitions. Matching stays exact, so the Conference League, the women's Champions League, the UEFA Youth League, and the AFC Champions League Elite are still rejected.
+- Added a 2.2 s pixel-art GOAL splash on cold boot: eight frames of a ball curling into the net with a `GOAL!` burst. Frames are L8 grayscale in flash, so it costs 600 KB of flash and no RAM, and it is skipped on key wake.
+- Added auto screen-off (always on / 30 / 60 / 120 seconds, default 60) and screen brightness (25/50/75/100%, default 100%) to the settings page and the serial console. Screen-off only turns the backlight off; fetching keeps running, so the panel shows fresh scores the moment a key wakes it.
+- Made the settings menu act on key press instead of waiting out the 180 ms click window, and repaint only the selected row instead of rebuilding the whole page. Key repeat no longer collapses two quick presses into an unhandled double-click.
+- Hardened score fetching: a failed fetch is retried once after 1.2 s and then waits 30 s instead of idling a whole refresh interval, and failure logs now report free heap and the largest free block so TLS failures can be told apart from network failures.
+- Fixed the banner label truncating to "Next ma...": DOTS mode reserves the ellipsis cell before laying out text, so five 12 px ideographs need a 72 px label and 70 px cut one off.
+
 ## Unreleased
 
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
