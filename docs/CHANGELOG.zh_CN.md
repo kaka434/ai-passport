@@ -62,7 +62,10 @@
 - 修掉顶部横幅的标签被截断成「下一个比…」：省略号要占一格，五个 12 px 汉字需要
   72 px 的标签，原来只给了 70。
 
-## Unreleased
+## v0.3.0-football-live-board — 2026-10-24
+
+同样开发于 `feature/football-live-board` 分支。这一版给详情页加上两队队徽，并修掉两个
+"看不见"的问题：凌晨的比赛在第二次刷新后消失、未开赛的场次没有队徽。
 
 - 修复当天第一次刷新之后看板变空、直接翻到明天的问题。凌晨段补拉原先做了节流，用一个「补过了」的标志控制，可每次刷新都会清空解析缓冲，凌晨那批比赛跟着没了，于是第二次刷新今天解析出 0 场。现在每次刷新都补拉——用 130 KB 换确定性，而不是留一个会和数据对不上的标志；失败就地重试一次，再次失败则作废整次刷新，不再发布半天的列表。
 
@@ -131,3 +134,5 @@
 - 同步更新索引：`docs/software-design/README.md`、`README.en_US.md` / `README.zh_CN.md` 的 `docs/` 目录说明。
 - 参考 cindy 仓库文档组织完善索引：新增 `docs/README.md` 根总索引；AGENTS.md 规则索引按触发场景改写（附触发条件）；`docs/contribution/` 与 `docs/development/` 的 README 补充收录标准。
 - 引入社区治理文档（参照 cindy 改写，放仓库根目录）：新增 `CONTRIBUTING.md` / `.zh_CN.md`（贡献指南，针对 ESP-IDF/AI agent/fork 场景改写）、`CODE_OF_CONDUCT.md` / `.zh_CN.md`（贡献者公约）、`SECURITY.md` / `.zh_CN.md`（安全报告流程）、`SUPPORT.md` / `.zh_CN.md`（支持渠道）；AGENTS.md 与 docs/README.md 同步引用。
+
+## Unreleased

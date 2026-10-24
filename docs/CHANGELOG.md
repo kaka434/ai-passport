@@ -56,7 +56,11 @@ from "today only" to "page backwards and forwards".
 - Hardened score fetching: a failed fetch is retried once after 1.2 s and then waits 30 s instead of idling a whole refresh interval, and failure logs now report free heap and the largest free block so TLS failures can be told apart from network failures.
 - Fixed the banner label truncating to "Next ma...": DOTS mode reserves the ellipsis cell before laying out text, so five 12 px ideographs need a 72 px label and 70 px cut one off.
 
-## Unreleased
+## v0.3.0-football-live-board - 2026-10-24
+
+Also developed on the `feature/football-live-board` branch. This release puts team
+crests on the detail pages and fixes two "you cannot see it" problems: dawn matches
+disappearing after the second refresh of the day, and fixtures showing no crests.
 
 - Fixed the board landing on an empty day and paging to tomorrow after the first refresh of the day. The dawn-window backfill was throttled with a flag that said "already fetched", but every refresh clears the parse buffer, so the dawn rows went with it and the second refresh parsed zero matches for today. The backfill now runs on every refresh - 130 KB buys determinism over a flag that can disagree with the data - retries once in place on failure, and voids the whole refresh rather than publishing a half-day list.
 
@@ -126,3 +130,5 @@ from "today only" to "page backwards and forwards".
 - Updated software-design and project README references for the new documentation structure.
 - Added the documentation catalog and task-triggered routing based on the earlier repository model.
 - Added bilingual contribution, code-of-conduct, security, and support documents tailored to this ESP-IDF and fork workflow.
+
+## Unreleased
