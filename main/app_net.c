@@ -1,6 +1,7 @@
 // main/app_net.c
 #include "app_net.h"
 
+#include "app_crest.h"
 #include "app_json.h"
 
 #include "esp_crt_bundle.h"
@@ -23,6 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "lwip/inet.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
 
 static const char *TAG = "app_net";
 
@@ -65,17 +70,20 @@ static const char *TAG = "app_net";
 // 已经找到下一个比赛日之后,隔多久再确认一次(临期会补上新的场次)。
 #define APP_NEXT_RECHECK_SECONDS (30 * 60)
 
-// 今天"凌晨段"的补拉节流。
+// 今天"凌晨段"的补拉。
 //
-// 补一份 schedule_list 要 200 KB 上下,而凌晨场最晚 04:00 开球、06:00 前
-// 一定踢完,过了这个点比分就定格了,当天再补也是同一份数据。所以 07:00
-// 之后当天只补一次——正好把流量开销从"每次刷新"压到"每天一次"。
-#define APP_EXTRA_SETTLE_HOUR 7
+// 补一份 schedule_list 约 130 KB。曾经按"过了 07:00 当天只补一次"节流过,
+// 那是错的:每次刷新 fetch_matches() 都会清空解析缓冲,凌晨那批比赛跟着没了,
+// 而节流标志还说"补过了"——于是第二次刷新今天变成 0 场,接着被当成"今天没
+// 赛事"去往后找下一个比赛日,看板直接跳到明天。数据只有一份、标志却记得
+// "取过",这种状态迟早对不上,所以现在每次刷新都补,用 130 KB 换确定性。
 
 static SemaphoreHandle_t s_lock;
 // 单独一把锁保护"射频只初始化一次":联网任务和扫描任务都会拉 Wi-Fi,
 // 而 esp_wifi_init() 重复调用会直接报错。
 static SemaphoreHandle_t s_wifi_lock;
+
+
 static app_config_t s_config;
 static app_snapshot_t s_snapshot;
 static app_scan_result_t s_scan;
@@ -99,10 +107,6 @@ static int8_t s_view_day;
 // "缓存到底还能不能用"的原因。
 static bool s_day_cache_valid;
 static int64_t s_day_cache_key;     // 拉的是哪一天的 CST 00:00(UTC 秒)
-// 今天"凌晨段"补过没有,补的是哪一天,以及补的时刻。见 APP_EXTRA_SETTLE_HOUR。
-static bool s_today_extra_valid;
-static int64_t s_today_extra_key;
-static int64_t s_today_extra_at;
 // 快照里实际装的是哪一天的比赛:0 / -1。
 //
 // 和 s_view_day 的区别很关键:用户按上下键的瞬间 s_view_day 就变了,但数据
@@ -371,9 +375,64 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
     esp_http_client_set_header(client, "Referer", APP_FEED_REFERER);
     esp_http_client_set_header(client, "Accept", "application/json");
 
+    // 排查用:握手前把"用哪个 IP、当时钟点"记下来。开机那几次证书校验失败
+    // 是随机的,只有把这两项和失败对上,才能分清是 CDN 节点不同还是时间没对齐。
+    {
+        const char *host = strstr(url, "://");
+        host = (host != NULL) ? host + 3 : url;
+        const size_t host_len = strcspn(host, "/:");
+        char hostname[64];
+        const size_t copy = host_len < sizeof(hostname) - 1 ? host_len : sizeof(hostname) - 1;
+        memcpy(hostname, host, copy);
+        hostname[copy] = '\0';
+
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        char ips[64] = "解析失败";
+        if (getaddrinfo(hostname, "443", &hints, &res) == 0 && res != NULL) {
+            size_t used = 0;
+            ips[0] = '\0';
+            for (struct addrinfo *it = res; it != NULL && used + 20 < sizeof(ips); it = it->ai_next) {
+                char one[20];
+                if (inet_ntop(AF_INET, &((struct sockaddr_in *)it->ai_addr)->sin_addr, one,
+                              sizeof(one)) == NULL) {
+                    continue;
+                }
+                used += (size_t)snprintf(ips + used, sizeof(ips) - used, "%s%s", used ? "," : "", one);
+            }
+            freeaddrinfo(res);
+        }
+        // 堆也一起打:握手要一块 16,417 B 的连续内存,失败时最想知道的就是
+        // "当时还剩多少、最大连续块多大"。放在成功路径上而不是只在失败时打,
+        // 是为了有一个正常值可以对照——只看失败时的数字,分不清"本来就紧"和
+        // "刚刚被谁吃掉了"。
+        ESP_LOGI(TAG, "%s 握手前:时钟 %lld,解析 %s,堆 %u,最大块 %u", what,
+                 (long long)time(NULL), ips,
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    }
+
     esp_err_t err = esp_http_client_open(client, 0);
+    const int64_t open_us = esp_timer_get_time();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "打开连接失败:%s", esp_err_to_name(err));
+        // 握手失败时把堆一起打出来:16 KB 的入缓冲要一块连续内存,如果"最大
+        // 连续块"不够,那是内存碎片而不是网络,两种原因的处理方式完全不同。
+        //
+        // 已知的失败形态(2026-10-23 定位):证书链校验偶发返回
+        // esp-x509-crt-bundle: PK verify failed with error 0x4290。0x4290 =
+        // MBEDTLS_ERR_RSA_PUBLIC_FAILED(-0x4280) + MBEDTLS_ERR_MPI_ALLOC_FAILED
+        // (-0x0010),也就是 RSA 公钥运算里一次 mbedtls_mpi_grow() 没申请到内存,
+        // 不是签名算错、不是时钟不对、也不是 CDN 节点问题——同一个 IP、同一份
+        // 证书,1.2 秒后重试必成功。堆见底的原因:esp_crt_bundle 每验一环都新建
+        // 一个公钥 context,mbedtls_rsa_public() 走 IDF 硬件 MPI 封装
+        // esp_mpi_exp_mod(),发现 ctx->RN 是空的就要调 calculate_rinv() 现算
+        // Montgomery 常数(造一个 4097 位大数再做一次纯软件除法),这一下连同
+        // 16 KB 入缓冲、4 KB 出缓冲、解析后的证书链和 lwIP/Wi-Fi 的收包缓冲叠在
+        // 一起,把堆压到只剩一两百字节。重试之所以能好,是那一下把之前的东西全
+        // 释放了,堆回到 45 KB 且不再碎。
+        ESP_LOGW(TAG, "打开连接失败:%s(空闲堆 %u B,最大连续块 %u B)", esp_err_to_name(err),
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         esp_http_client_cleanup(client);
         if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
         return err;
@@ -383,7 +442,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
     // 状态码是 fetch_headers() 解析响应头时才填进 response 结构体的,在那之前
     // get_status_code() 返回结构体初始值 0。先读状态码再 fetch,等于拿 0 跟 200
     // 比,每一条响应都会被判成失败——日志里就是那句 "HTTP 0"。
-    (void)esp_http_client_fetch_headers(client);
+    const int content_len = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
     if (status != 200) {
         ESP_LOGW(TAG, "%s HTTP %d", what, status);
@@ -392,6 +451,13 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
         if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
         return ESP_FAIL;
     }
+
+    // 一行把"这次连接花了多久、还剩多少堆、响应声明多大"记全。开机那一轮
+    // 经常出问题,有了这三个数就能分清是握手慢、内存紧,还是响应本身异常。
+    ESP_LOGI(TAG, "%s 建连 %lld ms,声明 %d B,空闲堆 %u B,最大连续块 %u B", what,
+             (esp_timer_get_time() - open_us) / 1000, content_len,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     app_feed_t feed;
     if (append) {
@@ -421,6 +487,15 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
     if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
 
     if (err != ESP_OK) return err;
+
+    // 收够了没有。read() 在连接被对端提前关掉时返回 0 而不是负数,所以
+    // "读循环正常结束"并不等于"整份响应都拿到了"。少了这一条,一次掉线就会
+    // 把半份 JSON 解析出来的结果当成正常数据发布出去——表现是"TLS 明明成功,
+    // 却一场比赛都没有",而且日志里连一句警告都没有。
+    if (content_len > 0 && total != (size_t)content_len) {
+        ESP_LOGW(TAG, "%s 响应被截断:声明 %d B,实收 %u B", what, content_len, (unsigned)total);
+        return ESP_FAIL;
+    }
 
     app_match_list_sort(out);
     // 把过滤计数一起打出来:如果"联赛不符"等于全部对象数,说明接口换了联赛名,
@@ -507,26 +582,6 @@ static bool view_changed_during_fetch(int8_t view) {
     ESP_LOGI(TAG, "拉取期间视图已切到第 %d 天,丢弃本次结果", (int)s_view_day);
     if (s_task != NULL) xTaskNotifyGive(s_task);
     return true;
-}
-
-// 今天要不要补凌晨段。见 APP_EXTRA_SETTLE_HOUR。
-static bool need_today_extra(int64_t now_utc) {    if (!s_today_extra_valid) return true;
-
-    // 跨天了:新的一天有新的凌晨场,要重新补。
-    if (s_today_extra_key != app_cst_day_start(now_utc, 0)) return true;
-
-    app_datetime_t now_dt;
-    if (!app_datetime_from_utc(now_utc, &now_dt)) return true;
-    // 07:00 之前凌晨场可能还在踢,每次都补。
-    if (now_dt.hour < APP_EXTRA_SETTLE_HOUR) return true;
-
-    // 已经过了定格时间。这里要判"定格之后补过一次没有",而不是"补过一次
-    // 没有":设备从凌晨一直开着的话,06:00 那次补拉拿到的只是当时已完场的,
-    // 05:30 开球那几场还没结束;等到 08:00 match_list 的窗口翻篇、凌晨段
-    // 彻底消失,就必须再补一次,否则那几场就漏了。
-    app_datetime_t at_dt;
-    if (!app_datetime_from_utc(s_today_extra_at, &at_dt)) return true;
-    return at_dt.hour < APP_EXTRA_SETTLE_HOUR;
 }
 
 // 今天没有白名单赛事时,按天往前找最近的一个比赛日。
@@ -616,10 +671,6 @@ static bool refresh_once(const app_config_t *cfg) {
     // 注意这个判断要在 set_state(FETCHING) 之前:放在后面的话,每 120 秒
     // 的自动刷新都会先把界面刷成"正在拉取"再改回 READY,白闪一下。
     if (view != 0) {
-        // s_parsed 接下来要装别的日子,今天那份(含凌晨段)就没了。切回今天
-        // 时必须重新补一次,否则凌晨那批比赛会凭空消失。
-        s_today_extra_valid = false;
-
         const int64_t key = app_cst_day_start(now, view);
         // 缓存能直接用的前提有两条:同一天拉过,而且快照里装的**就是**这一
         // 天。少了后一条,来回翻页时会把别的日子的列表当成这一天发布出去。
@@ -663,15 +714,25 @@ static bool refresh_once(const app_config_t *cfg) {
         return false;
     }
 
-    // 补今天的凌晨段。失败不算致命:match_list 那份已经把直播和未开始都
-    // 拿到了,少的只是凌晨已完场的那几场,不值得让整次刷新算失败。
-    if (need_today_extra(now)) {
-        if (fetch_today_extra(now) == ESP_OK) {
-            s_today_extra_valid = true;
-            s_today_extra_key = app_cst_day_start(now, 0);
-            s_today_extra_at = now;
-        } else {
-            ESP_LOGW(TAG, "凌晨段补拉失败,本次只显示比分列表的内容");
+    // 补今天的凌晨段。match_list 那份只覆盖 UTC 日,今天凌晨开球的欧冠/欧联
+    // 全在这一段里,而当前时段的 match_list 往往一场今天比赛都不剩——所以这份
+    // 补拉失败就等于"今天什么都没有"。它不能像以前那样算"非致命":那样会发布
+    // 一个空列表,然后睡满整个刷新间隔(60~300 秒),用户看到的就是"TLS 成功了
+    // 但一场比赛都没有",只能手动刷新救回来。
+    //
+    // 失败先就地重试一次:这份只有 120 KB,比让上层把 640 KB 的比分列表整个重下
+    // 一遍便宜得多。两次都失败才作废本次刷新,交给上层 1.2 秒后再来。
+    {
+        esp_err_t extra = fetch_today_extra(now);
+        if (extra != ESP_OK) {
+            ESP_LOGW(TAG, "凌晨段补拉失败,立刻重试一次");
+            vTaskDelay(pdMS_TO_TICKS(APP_RETRY_ONCE_DELAY_MS));
+            extra = fetch_today_extra(now);
+        }
+        if (extra != ESP_OK) {
+            ESP_LOGW(TAG, "凌晨段补拉再次失败,本次刷新作废");
+            set_error("拉取比分失败");
+            return false;
         }
     }
 
@@ -873,6 +934,156 @@ static void detail_publish(uint8_t state, const app_detail_t *detail, const char
     unlock();
 }
 
+// ---------------------------------------------------------------- 队徽兜底
+//
+// 为什么要兜底:未开赛(Fixture)的赛况响应里**根本没有队徽**——实测整份只有
+// 187~260 字节,statistics 是空数组、tendencies 是 null,两个 team 对象都不在。
+// 结果是"未开赛场次的详情页画两个空占位块"。
+//
+// 试过的两条路,都不可行:
+//   · 从列表接口(match_list)里把 logo 存下来——列表里确实有,但 40 场 × 2 队
+//     的 URL 要 5.8 KB 静态内存。C3 上 .bss 就是系统堆,加完之后冷启动 6 次里
+//     有 2 次在证书验签时撞上 0x4290(mbedtls_mpi_grow 分配失败),而加之前
+//     是 0/6。这条代价不能付。
+//   · 按球队 id 取徽——/data/team/{id} 等 8 个候选路径全是 404,没有这个接口。
+//
+// 最后用的是 /data/detail/match/{id}:它把球队信息摊平成 matchSample 里的
+// team_A_logo / team_B_logo 两个字段,**未开赛的场次也有值**。整份 5.7 KB,
+// 两个字段分别在偏移 1552 和 1833(实测),所以只读前 4 KB 就够,留了一倍余量。
+//
+// 代价是未开赛的详情页要多一次请求(TLS 握手 + 5.7 KB),但只在赛况响应里
+// 没有队徽时才发,而且静态内存一个字节都不占。
+#define APP_SAMPLE_URL "https://api.dongdianqiu.com/data/detail/match/"
+// 只读这么多。matchSample 是响应里的第一个对象,两个 logo 都在 2 KB 以内;
+// 后面跟的 matchFormation(带双方首发名单)才是真正把响应撑大的部分,不需要。
+#define APP_SAMPLE_READ_MAX 4096
+// 队徽 URL 的长度上限。实测 77~81 字符(8 的 scheme + 17 的域名 + 最长 57 的
+// 路径),96 留了余量。app_crest.c 里的槽位缓冲比这个大,还要拼缩略图参数。
+#define APP_CREST_URL_MAX 96
+
+// 从 flat JSON 里按 "key":"value" 取出一个字符串值,顺手把 \/ 还原成 /。
+//
+// 不用流式解析器:这里只要两个扁平字段,而且读的是前缀缓冲,一个线性扫描
+// 比再写一套状态机可靠得多。找不到就返回 false。
+static bool sample_field(const char *buf, size_t len, const char *key, char *dst, size_t cap) {
+    if (buf == NULL || key == NULL || dst == NULL || cap == 0) return false;
+    dst[0] = '\0';
+
+    const size_t key_len = strlen(key);
+    for (size_t i = 0; i + key_len + 3 < len; i++) {
+        if (buf[i] != '"') continue;
+        if (memcmp(buf + i + 1, key, key_len) != 0) continue;
+        size_t j = i + 1 + key_len;
+        if (buf[j] != '"') continue;            // 不是这个键(可能是名字更长的键)
+        j++;
+        while (j < len && (buf[j] == ' ' || buf[j] == ':')) j++;
+        if (j >= len || buf[j] != '"') return false;   // 值不是字符串
+
+        j++;
+        size_t o = 0;
+        while (j < len && buf[j] != '"') {
+            if (buf[j] == '\\' && j + 1 < len) {
+                // 这个接口把斜杠转义成 \/,其余转义原样保留。
+                if (buf[j + 1] == '/') {
+                    if (o + 1 < cap) dst[o++] = '/';
+                    j += 2;
+                    continue;
+                }
+                if (o + 1 < cap) dst[o++] = buf[j];
+                j++;
+                if (j < len && o + 1 < cap) dst[o++] = buf[j];
+                j++;
+                continue;
+            }
+            if (o + 1 < cap) dst[o++] = buf[j];
+            j++;
+        }
+        dst[o] = '\0';
+        return o > 0;
+    }
+    return false;
+}
+
+// 去 /data/detail/match/{id} 把两队的队徽 URL 取回来。失败时把两个字符串
+// 留空,调用方照常画占位块。
+//
+// 调用方必须已经握着 s_http_lock:同一时刻只能有一条 TLS。
+static void fetch_sample_logos(const char *match_id, char *home, char *away) {
+    if (home == NULL || away == NULL) return;
+    home[0] = '\0';
+    away[0] = '\0';
+
+    char url[128];
+    snprintf(url, sizeof(url), "%s%s", APP_SAMPLE_URL, match_id);
+
+    // 读缓冲从堆上临时要,用完立刻还:钉成静态 .bss 等于永久少 4 KB 的握手余量。
+    // 先要缓冲再建连,这样 TLS 的 16 KB 入缓冲面对的是一个还没被切碎的堆。
+    char *buf = heap_caps_malloc(APP_SAMPLE_READ_MAX, MALLOC_CAP_8BIT);
+    if (buf == NULL) {
+        ESP_LOGW(TAG, "队徽兜底:读缓冲申请不到");
+        return;
+    }
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+        .user_agent = APP_FEED_UA,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == NULL) {
+        heap_caps_free(buf);
+        return;
+    }
+
+    esp_http_client_set_header(client, "Referer", APP_DETAIL_REFERER);
+    esp_http_client_set_header(client, "Accept", "application/json");
+
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        (void)esp_http_client_fetch_headers(client);
+        if (esp_http_client_get_status_code(client) == 200) {
+            size_t got = 0;
+            while (got < APP_SAMPLE_READ_MAX) {
+                const int n = esp_http_client_read(client, buf + got,
+                                                   (int)(APP_SAMPLE_READ_MAX - got));
+                if (n <= 0) break;
+                got += (size_t)n;
+            }
+            if (sample_field(buf, got, "team_A_logo", home, APP_CREST_URL_MAX)
+                && sample_field(buf, got, "team_B_logo", away, APP_CREST_URL_MAX)) {
+                ESP_LOGI(TAG, "队徽兜底 %s:从 detail/match 取到 %u 字节", match_id, (unsigned)got);
+            } else {
+                ESP_LOGW(TAG, "队徽兜底 %s:detail/match 里没有 logo 字段(%u 字节)",
+                         match_id, (unsigned)got);
+                home[0] = '\0';
+                away[0] = '\0';
+            }
+        } else {
+            ESP_LOGW(TAG, "队徽兜底 HTTP %d", esp_http_client_get_status_code(client));
+        }
+        esp_http_client_close(client);
+    } else {
+        ESP_LOGW(TAG, "队徽兜底:建连失败");
+    }
+    esp_http_client_cleanup(client);
+    heap_caps_free(buf);
+}
+
+// 这一场实际该用哪两个队徽 URL:赛况响应里带了就用它的;没带(未开赛)就去
+// detail/match 再问一次。
+//
+// 调用方必须已经握着 s_http_lock。
+static void resolve_crest_urls(const char *match_id, const app_detail_t *detail,
+                               char *home, char *away) {
+    copy_text(home, APP_CREST_URL_MAX, detail->logo_home);
+    copy_text(away, APP_CREST_URL_MAX, detail->logo_away);
+    if (home[0] != '\0' && away[0] != '\0') return;
+    fetch_sample_logos(match_id, home, away);
+}
+
 // 拉一场赛况并解析。返回 true 表示快照已经更新成 READY。
 static bool detail_fetch(const char *match_id) {
     if (!s_sta_connected) {
@@ -894,6 +1105,10 @@ static bool detail_fetch(const char *match_id) {
     const char *why = "拉取失败";
     app_detail_t parsed;
     app_detail_reset(&parsed);
+    // 这一场最终要下的两个队徽。解析失败时是空的,request() 会把槽位作废——
+    // 上一场的徽章不该留在屏幕上冒充这一场。
+    char logo_home[APP_CREST_URL_MAX] = "";
+    char logo_away[APP_CREST_URL_MAX] = "";
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -921,9 +1136,6 @@ static bool detail_fetch(const char *match_id) {
                 why = "接口返回错误";
             } else if (app_detail_parse_stream(detail_read, client, &parsed)) {
                 ok = true;
-                ESP_LOGI(TAG, "详情 %s:进球 %u,统计 %u,阵型[%s]/[%s]",
-                         match_id, (unsigned)parsed.goal_count, (unsigned)parsed.stat_count,
-                         parsed.formation_home, parsed.formation_away);
             } else {
                 why = "解析失败";
                 ESP_LOGW(TAG, "详情解析失败(%s)", match_id);
@@ -933,10 +1145,26 @@ static bool detail_fetch(const char *match_id) {
         esp_http_client_cleanup(client);
     }
 
+    // 兜底放在锁里算:详情里没队徽(未开赛)时要去翻 s_crest_refs。
+    resolve_crest_urls(match_id, &parsed, logo_home, logo_away);
+
     if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+
+    if (ok) {
+        ESP_LOGI(TAG, "详情 %s:进球 %u,统计 %u,队徽[%s]/[%s]",
+                 match_id, (unsigned)parsed.goal_count, (unsigned)parsed.stat_count,
+                 logo_home, logo_away);
+    }
 
     detail_publish(ok ? APP_DETAIL_READY : APP_DETAIL_FAILED, ok ? &parsed : NULL,
                    ok ? NULL : why);
+
+    // 队徽的活排在发布之后:比分和进球先上屏,图慢慢补。
+    //
+    // 放在这个函数里(而不是等界面来要)最直接:URL 刚在这里算出来,串口的
+    // board detail <id> 也能完整走通这条链路,排查时不用按键翻到那一场。
+    app_crest_request(0, logo_home);
+    app_crest_request(1, logo_away);
     return ok;
 }
 
@@ -944,17 +1172,36 @@ static void detail_task(void *arg) {
     (void)arg;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (!s_detail_pending) continue;
-        s_detail_pending = false;
 
-        char id[APP_MATCH_ID_MAX + 1];
-        lock();
-        copy_text(id, sizeof(id), s_detail_req_id);
-        unlock();
-        if (id[0] == '\0') continue;
+        if (s_detail_pending) {
+            s_detail_pending = false;
 
-        (void)detail_fetch(id);
+            char id[APP_MATCH_ID_MAX + 1];
+            lock();
+            copy_text(id, sizeof(id), s_detail_req_id);
+            unlock();
+            if (id[0] != '\0') (void)detail_fetch(id);
+        }
+
+        // 队徽的活必须放在 detail_fetch 外面:队徽的 URL 来自详情响应,而界面是
+        // 等响应到了才去要图的——那时本次 detail_fetch 早就跑完了,任务已经回去
+        // 睡着。所以每一轮醒过来都先把排在队列里的图拉完再睡,不管是被谁叫醒的。
+        //
+        // 两个队徽串行下、和赛况共用同一把 http 锁,不会出现两条 TLS 抢堆。
+        // 用户先看到比分和进球,一两秒后队徽自己补上。
+        while (app_crest_pump()) {
+            // 一份一份来。两个槽位最多两轮,循环自己就停了。
+        }
     }
+}
+
+// 详情任务同样按需创建:内存紧张时开机建不出来,第一次点开比赛还有机会。
+static bool detail_task_spawn(void);
+
+// 叫醒详情任务:拉赛况、拉队徽都归它。
+void app_net_wake_detail(void) {
+    if (s_detail_task == NULL) (void)detail_task_spawn();
+    if (s_detail_task != NULL) xTaskNotifyGive(s_detail_task);
 }
 
 // 详情任务同样按需创建:内存紧张时开机建不出来,第一次点开比赛还有机会。
@@ -969,6 +1216,64 @@ static bool detail_task_spawn(void) {
         return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------- 通用取数
+
+// 给队徽这类"小文件整个读进内存"的请求用。和 detail_fetch() 的区别只是
+// 不解析、直接给字节,网络层面的讲究(锁、证书、Referer、超时)完全一致。
+int app_net_fetch_binary(const char *url, const char *referer,
+                         uint8_t *buf, size_t cap) {
+    if (url == NULL || buf == NULL || cap == 0u) return -1;
+    if (!s_sta_connected) return -2;
+    if (!ensure_time_synced()) return -3;
+    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+
+    int got = -1;
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+        .user_agent = APP_FEED_UA,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == NULL) {
+        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        return -4;
+    }
+    if (referer != NULL) esp_http_client_set_header(client, "Referer", referer);
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGW(TAG, "二进制打开连接失败:%s", url);
+    } else {
+        (void)esp_http_client_fetch_headers(client);
+        const int status = esp_http_client_get_status_code(client);
+        if (status != 200) {
+            ESP_LOGW(TAG, "二进制 HTTP %d:%s", status, url);
+        } else {
+            // 队徽只有几百字节到 3.5 KB,一把读完比流式简单。读满 cap 就停:
+            // 更大的响应(比如 CDN 不理 imageView2 把 150×150 原图返回来)
+            // 会被截断,调用方靠 Content-Length 或解码失败发现,不会越界。
+            size_t total = 0;
+            while (total < cap) {
+                const int n = esp_http_client_read(client, (char *)buf + total,
+                                                   (int)(cap - total));
+                if (n < 0) {
+                    ESP_LOGW(TAG, "二进制读取出错:%s", url);
+                    break;
+                }
+                if (n == 0) break;
+                total += (size_t)n;
+            }
+            got = (int)total;
+        }
+        esp_http_client_close(client);
+    }
+    esp_http_client_cleanup(client);
+    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+    return got;
 }
 
 // ---------------------------------------------------------------- 工作任务

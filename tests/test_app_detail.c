@@ -43,9 +43,11 @@ static const char SAMPLE[] =
     "},"
     "\"statistics\":{"
     "\"team_A\":{\"id\":\"59630\",\"name\":\"圣何塞体育\",\"formation\":\"4-3-3\","
-    "\"logo\":\"x\",\"rate\":0,\"starting_lineup_win_rate\":0},"
+    "\"logo\":\"https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/ChOxM1xC2O2ACWySAAASXOIGqDA185.png\","
+    "\"rate\":0,\"starting_lineup_win_rate\":0},"
     "\"team_B\":{\"id\":\"4879\",\"name\":\"圣卡洛斯\",\"formation\":\"4-4-2\","
-    "\"logo\":\"y\",\"rate\":0,\"starting_lineup_win_rate\":0},"
+    "\"logo\":\"https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/ChOxM1xC2O2ACWxSAAASXOIGqDA185.png\","
+    "\"rate\":0,\"starting_lineup_win_rate\":0},"
     "\"list\":["
     "{\"en_type\":\"\",\"type\":\"控球率\",\"team_A\":{\"value\":39,\"per\":39},"
     "\"team_B\":{\"value\":61,\"per\":61}},"
@@ -64,8 +66,11 @@ static void test_full_sample(void) {
     assert(app_detail_parse(SAMPLE, sizeof(SAMPLE) - 1, &detail));
 
     assert(detail.state == APP_STATE_FULL_TIME);
-    assert(strcmp(detail.formation_home, "4-3-3") == 0);
-    assert(strcmp(detail.formation_away, "4-4-2") == 0);
+    // 原图 150×150、84 字符,原样存下,缩略图参数下载时才拼。
+    assert(strcmp(detail.logo_home,
+                  "https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/ChOxM1xC2O2ACWySAAASXOIGqDA185.png") == 0);
+    assert(strcmp(detail.logo_away,
+                  "https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/ChOxM1xC2O2ACWxSAAASXOIGqDA185.png") == 0);
 
     // 6 个进球;黄牌与换人被 code 过滤掉。
     assert(detail.goal_count == 6);
@@ -102,7 +107,7 @@ static void test_full_sample(void) {
     assert(detail.stats[2].home == 20);
 }
 
-// 未开始的比赛:events 与 statistics 都是 null,阵型空着,不能崩。
+// 未开始的比赛:events 与 statistics 都是 null,队徽 URL 空着,不能崩。
 static void test_null_sections(void) {
     static const char json[] =
         "{\"status\":0,\"match_status\":\"Fixture\",\"events\":null,"
@@ -113,8 +118,52 @@ static void test_null_sections(void) {
     assert(detail.state == APP_STATE_FIXTURE);
     assert(detail.goal_count == 0);
     assert(detail.stat_count == 0);
-    assert(detail.formation_home[0] == '\0');
-    assert(detail.formation_away[0] == '\0');
+    assert(detail.logo_home[0] == '\0');
+    assert(detail.logo_away[0] == '\0');
+}
+
+// 队徽 URL 的三种边界:两队都有、一边缺、URL 长得离谱。
+// 少队徽不能影响进球和技术统计的解析——队徽是锦上添花,拿不到就画占位块。
+static void test_logo_field(void) {
+    // 只有主队给了 logo,客队那个对象里根本没有这个键。
+    static const char one[] =
+        "{\"match_status\":\"Playing\",\"events\":[],"
+        "\"statistics\":{\"team_A\":{\"id\":\"1\",\"logo\":\"https://cdn/a.png\"},"
+        "\"team_B\":{\"id\":\"2\"},"
+        "\"list\":[{\"type\":\"控球率\",\"team_A\":{\"value\":1},"
+        "\"team_B\":{\"value\":2}}]}}";
+
+    app_detail_t d;
+    assert(app_detail_parse(one, sizeof(one) - 1, &d));
+    assert(strcmp(d.logo_home, "https://cdn/a.png") == 0);
+    assert(d.logo_away[0] == '\0');
+    assert(d.stat_count == 1);   // 统计没被队徽影响
+
+    // logo 是 null:按"没有"处理。
+    static const char null_logo[] =
+        "{\"match_status\":\"Playing\",\"events\":[],"
+        "\"statistics\":{\"team_A\":{\"id\":\"1\",\"logo\":null},"
+        "\"team_B\":{\"id\":\"2\",\"logo\":\"\"}}}";
+    assert(app_detail_parse(null_logo, sizeof(null_logo) - 1, &d));
+    assert(d.logo_home[0] == '\0');
+    assert(d.logo_away[0] == '\0');
+
+    // 超长 URL 必须被夹断且结尾是 '\0',不能溢出到相邻字段。
+    // 实测正常 URL 约 84 字符,96 字节够;真来了个带长查询串的,
+    // app_crest 拿到的会是个残缺 URL,HTTP 请求失败走占位,可接受。
+    // 注意 j_string 截断时会回退到 safe(上一个完整字符的起点),
+    // 所以 96 字节的缓冲最多写下 94 个字符,这里按 94 断言,把这个
+    // "少一个字节"的既有行为钉住,将来看见 95 也不用怀疑是回归。
+    static const char long_url[] =
+        "{\"match_status\":\"Playing\",\"events\":[],"
+        "\"statistics\":{\"team_A\":{\"id\":\"1\","
+        "\"logo\":\"https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/"
+        "ChOxM1xC2O2ACWySAAASXOIGqDA185.png?imageView2/2/w/32/extra/padding\"},"
+        "\"team_B\":{\"id\":\"2\"}}}";
+    assert(app_detail_parse(long_url, sizeof(long_url) - 1, &d));
+    assert(strlen(d.logo_home) == APP_LOGO_LEN - 2);
+    assert(d.logo_home[APP_LOGO_LEN - 1] == '\0');
+    assert(strncmp(d.logo_home, "https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/", 42) == 0);
 }
 
 // 空 events 对象(踢了但没有任何事件)也要能解析。
@@ -144,8 +193,8 @@ static void test_array_sections(void) {
     assert(detail.state == APP_STATE_FIXTURE);
     assert(detail.goal_count == 0);
     assert(detail.stat_count == 0);
-    assert(detail.formation_home[0] == '\0');
-    assert(detail.formation_away[0] == '\0');
+    assert(detail.logo_home[0] == '\0');
+    assert(detail.logo_away[0] == '\0');
 
     // 中场暂停的比赛:events 已经有内容,statistics 还是 []。
     // 这种球看着"有赛况",整份响应却会栽在统计那一项上。
@@ -222,8 +271,8 @@ static void test_streaming(void) {
         assert(got.state == want.state);
         assert(got.goal_count == want.goal_count);
         assert(got.stat_count == want.stat_count);
-        assert(strcmp(got.formation_home, want.formation_home) == 0);
-        assert(strcmp(got.formation_away, want.formation_away) == 0);
+        assert(strcmp(got.logo_home, want.logo_home) == 0);
+        assert(strcmp(got.logo_away, want.logo_away) == 0);
         for (size_t g = 0; g < want.goal_count; g++) {
             assert(got.goals[g].minute == want.goals[g].minute);
             assert(got.goals[g].extra == want.goals[g].extra);
@@ -372,6 +421,7 @@ static void test_unicode_escaped_names(void) {
 int main(void) {
     test_full_sample();
     test_null_sections();
+    test_logo_field();
     test_empty_events();
     test_array_sections();
     test_truncated();

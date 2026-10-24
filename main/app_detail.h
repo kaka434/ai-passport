@@ -9,8 +9,8 @@
 //   events.{分钟}.teamAEvents[] / teamBEvents[]   进球、黄牌、换人…
 //      code: G=进球 PG=点球 OG/UG=乌龙 YC=黄牌 RC=红牌 SI/SO=换人 AS=助攻
 //      分钟不在事件里,而在外层对象的键上("35"、"90+2")
-//   statistics.team_A.formation / team_B.formation  阵型,很多比赛是空串
-//   statistics.list[]                               控球率、射门等,带两队数值
+//   statistics.team_A.logo / team_B.logo          队徽 URL
+//   statistics.list[]                             控球率、射门等,带两队数值
 //
 // 注意 events / statistics 这两项的类型不固定:有数据时是对象 {},"还没有数据"
 // (未开赛、延期、统计未出)时是空数组 [] 或 null。实测 187 字节的未开赛响应
@@ -32,8 +32,11 @@
 // 球员名 24 字节 = 8 个汉字,够放"亚历山大-洛佩斯"这类音译名。
 #define APP_PLAYER_LEN 24
 #define APP_STAT_LABEL_LEN 20
-// "4-3-3" 这种字符串;留宽一点,防止接口给 "4-2-3-1" 之外的花样。
-#define APP_FORMATION_LEN 12
+// 队徽 URL。实测形如
+// https://sd.dongdianqiu.com/fastdfs3/M00/B5/7B/ChOxM1xC2O2ACWySAAASXOIGqDA185.png
+// 约 84 字符,96 字节留余量。CDN 还支持 ?imageView2/2/w/32 直接缩到 32 像素,
+// 那个参数不存这里,下载时再拼。
+#define APP_LOGO_LEN 96
 
 typedef enum {
     APP_GOAL_NONE = 0,   // 不是进球(黄牌、换人…),解析时用来过滤
@@ -59,8 +62,8 @@ typedef struct {
 
 typedef struct {
     uint8_t state;   // app_match_state_t,来自响应里的 match_status
-    char formation_home[APP_FORMATION_LEN];
-    char formation_away[APP_FORMATION_LEN];
+    char logo_home[APP_LOGO_LEN];
+    char logo_away[APP_LOGO_LEN];
     app_goal_t goals[APP_GOAL_MAX];
     size_t goal_count;
     app_stat_t stats[APP_STAT_MAX];

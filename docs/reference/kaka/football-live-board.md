@@ -37,7 +37,7 @@ the score screen is just a column of matches, two lines each.
 | Screen | Contents |
 | --- | --- |
 | Scores | One column of matches: live first, then today's fixtures, then today's finished matches. Each row shows league and state on the first line, then home team, score and away team on the second |
-| Detail | Page 1: score bar plus a goal timeline (home on the left, away on the right, minute in the middle; penalties marked, own goals marked). Page 2: formations plus eight statistics |
+| Detail | A score bar shared by both pages, with a 32x32 crest above each team name. Page 1 adds a goal timeline (home on the left, away on the right, minute in the middle; penalties marked, own goals marked). Page 2 adds eight statistics |
 | Settings | Wi-Fi setup, phone setup, IP address, refresh interval, auto screen-off, brightness, refresh now, clear credentials |
 | Networks | Scanned SSIDs; previously used networks are pinned to the top and tagged as saved |
 | Password | A 6x7 on-screen keyboard for the selected secured network |
@@ -246,9 +246,18 @@ accepts finished matches - and de-duplicated by match id.
 `all`, `live`, `playing`) ever returns a match that is in progress, so a live match
 would disappear from the board. It is a supplement, not a substitute.
 
-The extra request costs about 220 KB, so it is throttled: before 07:00 every refresh
-tops the segment up (the last early kick-off may still be running), and after 07:00
-the segment is fetched once and then frozen until the day rolls over.
+The extra request costs about 220 KB, and it runs on **every** refresh. It was once
+throttled to "once per day after 07:00", and that throttle was a bug: `fetch_matches()`
+clears the parse buffer at the start of every refresh, so the dawn rows went with it,
+while the "already fetched" flag stayed set. The second refresh of the day then parsed
+zero matches, concluded that today had nothing on, and paged forward to tomorrow - the
+board silently jumped a day. One copy of the data plus a flag that remembers "I got it
+already" is a state that will disagree with itself eventually; 130 KB per refresh buys
+determinism instead.
+
+A failed backfill is retried once in place, and a second failure voids the whole
+refresh - the previous board is kept and an error is shown, rather than publishing a
+half-day list that looks like an empty day.
 
 
 ### Next match day
@@ -351,7 +360,7 @@ Fields used:
 | Goals | `events.{minute}.teamAEvents[]` / `teamBEvents[]`, split by `code`: `G` goal, `PG` penalty, `OG`/`UG` own goal; everything else (`YC`, `RC`, `SI`, `SO`) is dropped |
 | Minute | carried by the outer object's key (`"45+2"`); the event itself only has `minute_extra` |
 | Running score | the event's `score`, for example `"2-1"` |
-| Formations | `statistics.team_A.formation` / `team_B.formation` |
+| Crest URLs | `statistics.team_A.logo` / `team_B.logo` (see [Team crests](#team-crests)) |
 | Statistics | `statistics.list[]`, each `{type, team_A:{value}, team_B:{value}}` |
 
 The detail endpoint escapes **every** Chinese character in the response as `\uXXXX`,
@@ -383,8 +392,70 @@ but the whole response dies on the statistics section.
 response and `matchFormation` in `app/detail` is `null`; without a stadium there are
 no coordinates to look weather up with. Showing less is better than inventing data.
 
-Formations are empty strings for many matches (only those with a confirmed starting
-line-up carry one); the UI prints a dash instead of leaving the row blank.
+### Team crests
+
+The detail response carries a crest URL per team under `statistics.team_A.logo` and
+`statistics.team_B.logo`. The originals are 150x150 palette PNGs around 4.7 KB;
+decoded that is 90 KB of pixels, which the C3 cannot spare. The CDN behind those
+hosts (Qiniu) accepts `?imageView2/2/w/32`, which returns a 32x32 thumbnail of
+1-3.5 KB. The slash-separated form is required -- `w_32` with an underscore is
+silently ignored and the full image comes back.
+
+Formats are not uniform: the CDN picks the smallest encoding per image, and across
+45 sampled crests three of the five PNG colour types appeared (palette, RGBA,
+grayscale+alpha). That is why `main/app_png.c` decodes all of 0/2/3/4/6 rather than
+just the palette case.
+
+`main/app_png.c` is a purpose-built decoder, not a general one. It accepts only
+8-bit, non-interlaced images up to 32x32, and rejects everything else. It carries
+its own DEFLATE inflate (fixed and dynamic Huffman, stored blocks), the five
+unfilter modes, and palette/tRNS lookup. lodepng is vendored with LVGL and could
+have been enabled instead, but it allocates 4 KB of RGBA output plus nearly 3 KB of
+Huffman tables from the heap for a 32x32 image; this one allocates nothing and
+writes into a scratch buffer supplied by the caller.
+
+Transparent pixels are blended onto the panel colour at decode time rather than at
+draw time: LVGL's RGB565 images carry no alpha channel, so blending late leaves a
+black fringe around the crest's anti-aliased edge. `APP_CREST_BG_RGB565` in
+`app_crest.h` is the panel colour (`C_PANEL` 0x11291D) in RGB565.
+
+`main/app_crest.c` keeps two URL-keyed slots. Re-opening the same match reuses the
+decoded pixels; opening a different one replaces them. Requests are queued by
+`app_net` right after a successful `detail_fetch()` -- the URL only exists in that
+response -- and drained by the detail task, so the serial command
+`board detail <match_id>` exercises the whole path without touching the keypad.
+
+Only the two 32x32 pixel buffers (4.1 KB) are static. The 4 KB download buffer and
+the 4.1 KB inflate scratch are taken from the heap per crest and returned
+immediately. Pinning them in `.bss` would cost every TLS handshake 8 KB of headroom,
+which is exactly the `0x4290` failure described under [LVGL memory](#lvgl-memory).
+
+**A match that has not kicked off has no crests, because the detail response has
+none.** That response measures 187-260 bytes: `statistics` is an empty array,
+`tendencies` is `null`, and neither team object is present, so the detail page can
+only draw two empty placeholders. The fix is a second request to
+`/data/detail/match/{id}`, which flattens the team data into
+`matchSample.team_A_logo` / `team_B_logo` -- populated even before kickoff. The whole
+document is 5.7 KB and the two fields sit at offsets 1552 and 1833, so only the first
+4 KB are read. The extra request is issued only when the overview response came back
+without crests, so live and finished matches never pay for it.
+
+The cheaper route was tried and rejected: `match_list` carries a logo for every team,
+fixtures included, so the list parser could simply keep them and skip the second
+request. But 40 matches x 2 teams of URLs cost 5.8 KB of static memory, and with that
+added two of six cold boots failed certificate verification with `0x4290`, against
+0/6 without it. `0x4290` is precisely what happens when static memory eats the
+handshake headroom (see [LVGL memory](#lvgl-memory)), so one saved request is not
+worth the trade. (There is no per-team crest endpoint: `/data/team/{id}` and seven
+other candidate paths all return 404.)
+
+Verification: `tools/gen_crest_fixtures.py` decodes a mix of six real CDN
+thumbnails and seven synthesised PNGs with PIL, then applies the same RGB565
+conversion the firmware uses. `tests/test_app_png.c` requires the C decoder to match
+that pixel for pixel, so the hand-written inflate is checked against an independent
+implementation rather than against itself. Seven malformed inputs (truncated,
+bad CRC, oversized, 4-bit palette, wrong signature, multi-block IDAT) must be
+rejected.
 
 ## Fonts
 
@@ -412,7 +483,7 @@ sanitiser, so an access point with an emoji in its name shows `?`.
 ## LVGL memory
 
 LVGL runs on its own built-in TLSF pool, sized by `CONFIG_LV_MEM_SIZE_KILOBYTES` and
-currently 40 KB. It is a static array in DRAM: not shared with the system heap and
+currently 32 KB. It is a static array in DRAM: not shared with the system heap and
 not extensible at run time.
 
 Running out of it is worse than it sounds. A failed LVGL allocation does not return
@@ -426,15 +497,49 @@ local style properties on one screen, and the 24 KB pool failed to allocate agai
 a fragmented heap - selecting an SSID and pressing OK froze the device. A key is now
 a single label with a background, 42 objects in total, and the pool went to 40 KB.
 
+**The pool size is also a system-heap dial.** Those kilobytes are a static array, so
+every KB taken from the pool is a KB the heap does not have, and the heap is what
+TLS runs on. 40 KB was measured against LVGL's own needs and never against the
+handshake's, and the handshake is the tighter budget:
+
+- The TLS in-buffer alone is 16,417 B (16 KB record + 33 B framing), plus a 4,129 B
+  out-buffer, plus the parsed peer chain, plus the lwIP/Wi-Fi receive buffers.
+- On top of that, `esp_crt_bundle` builds a fresh public-key context for every link
+  in the chain, and `mbedtls_rsa_public()` routes through IDF's hardware-MPI wrapper
+  `esp_mpi_exp_mod()`, which finds `ctx->RN` empty and calls `calculate_rinv()` -
+  a 4097-bit scratch number plus a software `mbedtls_mpi_div_mpi()`. With a 60 ms
+  sampler the free heap went 14,332 B -> 440 B -> 32 B inside that window.
+- When the 256 B `mbedtls_mpi_grow()` in `mbedtls_rsa_public()` loses that race the
+  chain verify returns `0x4290` = `MBEDTLS_ERR_RSA_PUBLIC_FAILED + MBEDTLS_ERR_MPI_ALLOC_FAILED`,
+  mbedtls sends a fatal alert, and `esp_http_client_open()` reports
+  `ESP_ERR_HTTP_CONNECT`. Not a bad signature, not the clock, not the CDN.
+
+Cutting the pool 40 KB -> 32 KB raised the free heap during an open session from
+about 7.8 KB to about 19 KB and the largest contiguous block from 2-4.6 KB to
+7.7 KB. Ten consecutive cold boots then produced zero certificate-verify failures
+against one failure in the previous ten. The remaining margin is thin on purpose:
+the scores page peaks at 15.4 KB of the 30.9 KB pool, and the provisioning keyboard
+is the screen that has to be re-measured after any UI change that adds objects.
+
 `build_body()` logs the numbers from `lv_mem_monitor()` after every rebuild. Check
 that line after touching the UI instead of finding out on the device.
+
+The same dial applies to anything added later. The crest feature wanted two 32x32
+RGB565 buffers (4.1 KB, unavoidable: LVGL draws them on every refresh, so they
+cannot live on the stack) plus a 4 KB download buffer and a 4.1 KB inflate scratch.
+Only the first two are static; the other two are heap allocations held for the few
+milliseconds between the fetch and the decode. Pinning all four would have cost
+every handshake 12 KB, giving back most of the 11 KB the pool change had just won.
+Measured `.bss` is 86,072 B with the crests and was 81,904 B before them.
 
 ## Code map
 
 ```text
 main/app_model.[ch]    match model, ordering, competition whitelist, date and time labels (host tested)
 main/app_json.[ch]     streaming parser and the three display filters (host tested)
-main/app_detail.[ch]   streaming match detail parser: goals, formations, statistics (host tested)
+main/app_detail.[ch]   streaming match detail parser: goals, crest URLs, statistics (host tested)
+main/app_png.[ch]      minimal PNG decoder for 32x32 crest thumbnails (host tested)
+main/app_crest.[ch]    two-slot crest cache: URL key, serial fetch, decode
 main/app_nav.[ch]      six-screen, three-button navigation state machine (host tested)
 main/app_config.[ch]   config struct, refresh presets, input validation (host tested)
 main/app_keyboard.[ch] on-screen keyboard model: 42 keys, cursor, case toggle (host tested)
@@ -447,6 +552,7 @@ main/app_ui.c          all six screens (hand-drawn, not the demo test menu)
 main/app_fonts.c       missing-glyph fallback to '?'
 tools/gen_fonts.py     regenerate the font subsets from sources, GB2312 and a capture
 tools/check_fonts.py   fail the gate on a stale inventory or a missing glyph
+tools/gen_crest_fixtures.py  regenerate the crest test data from real thumbnails plus synthetic PNGs
 ```
 
 Threading: the button callback only runs the wake-key guard and enqueues an event.

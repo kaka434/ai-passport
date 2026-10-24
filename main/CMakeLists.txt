@@ -7,6 +7,8 @@ idf_component_register(
          "app_model.c"
          "app_json.c"
          "app_detail.c"
+         "app_png.c"
+         "app_crest.c"
          "app_nav.c"
          "app_config.c"
          "app_keyboard.c"

@@ -19,7 +19,11 @@
 // 任何共用结构(不复用 ui_pixel_*)。
 #include "app_ui.h"
 
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+
 #include "app_config.h"
+#include "app_crest.h"
 #include "app_fonts.h"
 #include "app_keyboard.h"
 #include "app_known.h"
@@ -97,18 +101,24 @@ static const char *TAG = "app_ui";
 #define KB_X0 10
 #define KB_Y0 62
 
-// 详情页:顶部 46 px 比分条,下面 8 行 × 23 px = 184,合计 230 < 256。
-// 一行只放一侧的进球(主队靠左、客队靠右、分钟居中),扫一眼就知道谁进的。
-#define DETAIL_BAR_H 46
-#define GOAL_ROW_H 22
-#define GOAL_ROW_PITCH 23
-#define GOAL_ROW_Y0 66
+// 详情页顶部比分条,68 px:联赛/状态 14 + 队徽 32 + 队名 16,加上下余量。
+// 队徽放在队名上方而不是下方——同样的高度里,徽章在上、名字在下更符合看球时
+// 的读法,而且能把整条压到 68 px,下面 8 行进球才放得下(72 + 8×21 = 240)。
+#define DETAIL_BAR_H 68
+#define CREST_SIZE 32
+// 队徽水平位置对齐各自队名的中心:主队名 6..80 的中心是 43,客队名
+// 144..218 的中心是 181,各往左退半个徽章。
+#define CREST_X_HOME 27
+#define CREST_X_AWAY 173
+#define GOAL_ROW_H 20
+#define GOAL_ROW_PITCH 21
+#define GOAL_ROW_Y0 88
 #define GOAL_ROWS 8
 
-// 详情第 2 页:阵型条 40 px + 8 项统计 × 24 px = 232 < 256。
-#define FORM_H 40
-#define STAT_ROW_PITCH 24
-#define STAT_ROW_Y0 48
+// 详情第 2 页:顶部就是同一个带队徽的比分条,下面 8 项统计。
+// 74 = 68 的比分条 + 6 的间距;22 的行距塞得下 8 项(74 + 7×22 + 20 = 248)。
+#define STAT_ROW_PITCH 22
+#define STAT_ROW_Y0 74
 
 // 长时间无操作后的背光处理统一由 main.c 的 app_idle 任务负责(它才知道
 // 「自动息屏」和「屏幕亮度」这两个设置)。界面这边不再自己压背光,否则
@@ -163,6 +173,9 @@ static app_match_t s_detail_match;
 static int s_detail_index;              // 打开前的选中项,返回时恢复
 static app_detail_snapshot_t s_detail;
 static uint32_t s_detail_revision;
+// 队徽是异步补的,版本号和赛况分开记:图下完要重画一次比分条,但不该把整个
+// 详情页的数据再拷一遍。
+static uint32_t s_crest_revision;
 
 // 手机配网页的状态。约 80 字节。
 static app_portal_snapshot_t s_portal;
@@ -518,7 +531,45 @@ static void goal_minute_text(const app_goal_t *goal, char *buf, size_t cap) {
     }
 }
 
-// 比分条:联赛/状态 + 主队 · 比分 · 客队。详情页和比分页共用同一份数据格式,
+// 队徽的贴图描述符。每个槽位一份:详情页上两队徽同时可见,而 lv_image 只存
+// 指针不拷数据,所以描述符必须和像素缓冲一样活得比界面对象长——放静态区。
+//
+// 用 lv_image 而不是 lv_canvas:canvas 每个实例要配一块绘制缓冲(32×32 就是
+// 2 KB × 2),而 image 只要这 32 字节的描述符,像素直接指向 app_crest 解好的
+// 那份 RGB565。
+static lv_image_dsc_t s_crest_dsc[APP_CREST_SLOTS];
+
+// 把某个槽位的队徽贴到 parent 上。拿不到图(没 URL、还在下、下失败)时画一块
+// 和徽章等大的亮面色块:版面不会因为图没到就塌下去,用户也能看出"这里该有个
+// 徽章,只是还没来"。
+static void draw_crest(lv_obj_t *parent, int slot, int x, int y) {
+    if (parent == NULL || slot < 0 || slot >= APP_CREST_SLOTS) return;
+
+    const app_png_image_t *img = app_crest_image(slot);
+    if (img == NULL || img->w == 0 || img->h == 0) {
+        (void)panel(parent, x, y, CREST_SIZE, CREST_SIZE, C_PANEL_HI, 4);
+        return;
+    }
+
+    lv_image_dsc_t *dsc = &s_crest_dsc[slot];
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_RGB565;
+    dsc->header.flags = 0;
+    dsc->header.w = img->w;
+    dsc->header.h = img->h;
+    dsc->header.stride = (uint32_t)img->w * 2u;
+    dsc->data_size = (uint32_t)img->w * (uint32_t)img->h * 2u;
+    dsc->data = (const uint8_t *)img->pixels;
+    dsc->reserved = NULL;
+    dsc->reserved_2 = NULL;
+
+    lv_obj_t *o = lv_image_create(parent);
+    if (o == NULL) return;
+    lv_image_set_src(o, dsc);
+    lv_obj_set_pos(o, x, y);
+}
+
+// 比分条:联赛/状态 + 两队徽 + 主队 · 比分 · 客队。详情页两页共用同一份数据格式,
 // 但这里用的是"打开那一刻"的副本,所以拉取过程中数字不会跳。
 static void build_detail_bar(void) {
     char league[APP_NAME_LEN];
@@ -537,12 +588,18 @@ static void build_detail_bar(void) {
     lv_obj_t *bar = panel(s_body, 8, 0, SCR_W - 16, DETAIL_BAR_H, C_PANEL, 8);
     if (bar == NULL) return;
 
+    // 队徽的透明像素在解码时就按 APP_CREST_BG_RGB565 混成了这块面板的颜色,
+    // 所以这里直接贴上去就行,不需要再做 alpha 合成。
+    draw_crest(bar, 0, CREST_X_HOME, 18);
+    draw_crest(bar, 1, CREST_X_AWAY, 18);
+
     clipped_text(bar, APP_FONT_SMALL, C_MUTED, league, 8, 3, 130, 14, LV_TEXT_ALIGN_LEFT);
     clipped_text(bar, APP_FONT_SMALL, state_color(&s_detail_match), state, 118, 3, 94, 14,
                  LV_TEXT_ALIGN_RIGHT);
-    clipped_text(bar, APP_FONT_SMALL, C_TEAM, home, 6, 21, 74, 18, LV_TEXT_ALIGN_LEFT);
-    clipped_text(bar, APP_FONT_SCORE, C_TEXT, score, 88, 15, 48, 28, LV_TEXT_ALIGN_CENTER);
-    clipped_text(bar, APP_FONT_SMALL, C_TEAM, away, 144, 21, 74, 18, LV_TEXT_ALIGN_RIGHT);
+    // 比分和队徽同一行,垂直居中于那 32 px。
+    clipped_text(bar, APP_FONT_SCORE, C_TEXT, score, 88, 20, 48, 32, LV_TEXT_ALIGN_CENTER);
+    clipped_text(bar, APP_FONT_SMALL, C_TEAM, home, 6, 51, 74, 16, LV_TEXT_ALIGN_LEFT);
+    clipped_text(bar, APP_FONT_SMALL, C_TEAM, away, 144, 51, 74, 16, LV_TEXT_ALIGN_RIGHT);
 }
 
 // 未开赛的比赛,详情接口里就是空的(187 字节、events/statistics 都是 [])。
@@ -595,13 +652,13 @@ static void build_detail_goals(void) {
     // 0-0 的比赛看起来像"页面没加载出来"。
     char count_text[16];
     snprintf(count_text, sizeof(count_text), "%u 个", (unsigned)d->goal_count);
-    clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "进球", 12, 50, 60, 14, LV_TEXT_ALIGN_LEFT);
-    clipped_text(s_body, APP_FONT_SMALL, C_MUTED, count_text, SCR_W - 72, 50, 60, 14,
+    clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "进球", 12, 72, 60, 14, LV_TEXT_ALIGN_LEFT);
+    clipped_text(s_body, APP_FONT_SMALL, C_MUTED, count_text, SCR_W - 72, 72, 60, 14,
                  LV_TEXT_ALIGN_RIGHT);
 
     if (d->goal_count == 0) {
         const char *why = s_detail_match.state == APP_STATE_FIXTURE ? "还没开球" : "还没有进球";
-        clipped_text(s_body, APP_FONT_BODY, C_MUTED, why, 16, 92, SCR_W - 32, 22,
+        clipped_text(s_body, APP_FONT_BODY, C_MUTED, why, 16, 96, SCR_W - 32, 22,
                      LV_TEXT_ALIGN_CENTER);
         return;
     }
@@ -668,24 +725,8 @@ static void build_detail_stats(void) {
         return;
     }
 
-    // 阵型条。接口很多比赛不给阵型(空串),这时显示 "—" 而不是留白,
-    // 让用户知道"这场没有"而不是"界面坏了"。
-    char form_home[APP_FORMATION_LEN];
-    char form_away[APP_FORMATION_LEN];
-    app_fonts_sanitize(d->formation_home[0] ? d->formation_home : "—",
-                       form_home, sizeof(form_home));
-    app_fonts_sanitize(d->formation_away[0] ? d->formation_away : "—",
-                       form_away, sizeof(form_away));
-
-    lv_obj_t *bar = panel(s_body, 8, 0, SCR_W - 16, FORM_H, C_PANEL, 8);
-    if (bar != NULL) {
-        clipped_text(bar, APP_FONT_BODY, C_TEAM, form_home, 8, 8, 70, 22, LV_TEXT_ALIGN_LEFT);
-        clipped_text(bar, APP_FONT_SMALL, C_MUTED, "阵型", 90, 12, 52, 16, LV_TEXT_ALIGN_CENTER);
-        clipped_text(bar, APP_FONT_BODY, C_TEAM, form_away, 148, 8, 70, 22, LV_TEXT_ALIGN_RIGHT);
-    }
-
     if (d->stat_count == 0) {
-        clipped_text(s_body, APP_FONT_BODY, C_MUTED, "暂无技术统计", 16, 108, SCR_W - 32, 22,
+        clipped_text(s_body, APP_FONT_BODY, C_MUTED, "暂无技术统计", 16, 116, SCR_W - 32, 22,
                      LV_TEXT_ALIGN_CENTER);
         return;
     }
@@ -725,6 +766,12 @@ static void open_detail(void) {
 
     s_detail_index = s_nav.sel;
     s_detail_match = s_snap.matches.items[s_nav.sel];
+
+    // 立刻作废上一场的队徽。新一场的 URL 要等详情响应到了才知道,而屏幕这一
+    // 刻就已经重画了——不先撤掉,旧徽章会在新页面上闪一下。
+    app_crest_request(0, NULL);
+    app_crest_request(1, NULL);
+    s_crest_revision = app_crest_revision();
 
     app_detail_reset(&s_detail.detail);
     s_detail.state = APP_DETAIL_LOADING;
@@ -1301,9 +1348,14 @@ static void build_body(void) {
     // 卡死。有这个数字,下次谁把某个页面写重了能第一时间看出来。
     lv_mem_monitor_t mon;
     lv_mem_monitor(&mon);
-    ESP_LOGI(TAG, "页面 %d:LVGL 池 %u/%u 已用(%u%%),峰值 %u,碎片 %u%%", (int)s_nav.page,
+    // 系统堆也一起打:LVGL 池是静态数组,池子每多占 1 KB,堆就少 1 KB,而堆是
+    // TLS 握手要用的那点余量。两个数并排看,才知道加界面的代价花在哪边。
+    ESP_LOGI(TAG, "页面 %d:LVGL 池 %u/%u 已用(%u%%),峰值 %u,碎片 %u%%;系统堆 %u,最大块 %u",
+             (int)s_nav.page,
              (unsigned)(mon.total_size - mon.free_size), (unsigned)mon.total_size,
-             (unsigned)mon.used_pct, (unsigned)mon.max_used, (unsigned)mon.frag_pct);
+             (unsigned)mon.used_pct, (unsigned)mon.max_used, (unsigned)mon.frag_pct,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 
 // ---------------------------------------------------------------- 设置项动作
@@ -1390,6 +1442,14 @@ static void on_tick(lv_timer_t *timer) {
         if (detail_rev != s_detail_revision) {
             app_net_detail_copy(&s_detail);
             s_detail_revision = detail_rev;
+            dirty = true;
+        }
+
+        // 队徽的排队在 app_net 里(详情拉成功就地排),这边只跟着它的版本号
+        // 重画:图下完、下失败、被作废都会 +1。
+        const uint32_t crest_rev = app_crest_revision();
+        if (crest_rev != s_crest_revision) {
+            s_crest_revision = crest_rev;
             dirty = true;
         }
     }

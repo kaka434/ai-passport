@@ -100,11 +100,18 @@ run_static_checks() {
         tests/test_app_known.c main/app_known.c \
         -o "${test_dir}/test_app_known"
     "${test_dir}/test_app_known"
-    # 单场赛况:进球时间轴 / 阵型 / 技术统计的解析。
+    # 单场赛况:进球时间轴 / 队徽 URL / 技术统计的解析。
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_app_detail.c main/app_detail.c main/app_model.c \
         -o "${test_dir}/test_app_detail"
     "${test_dir}/test_app_detail"
+    # 队徽 PNG 解码器:手写的 inflate / 反过滤 / 调色板查找。期望值由
+    # tools/gen_crest_fixtures.py 用 PIL 独立解一遍再按 app_png.h 的公式算出来,
+    # 所以对上的不是"两次跑出一样",而是"和 PIL 一致"。
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests \
+        tests/test_app_png.c main/app_png.c tests/crest_fixtures.c \
+        -o "${test_dir}/test_app_png"
+    "${test_dir}/test_app_png"
     PYTHONDONTWRITEBYTECODE=1 python3 tools/check_fonts.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py

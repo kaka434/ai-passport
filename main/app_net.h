@@ -110,6 +110,22 @@ void app_net_set_view_day(int8_t day);
 // 只读一个字节,不用拷整份快照。
 int8_t app_net_view_day(void);
 
+// ---------------------------------------------------------------- 通用取数
+//
+// 把 url 的正文读进 buf(最多 cap 字节),返回实际字节数;<0 = 出错。
+// 走和比分/详情同一把互斥量、同一套证书包与 User-Agent,所以它不会和它们
+// 抢堆——这一点在 C3 上是硬要求:两条 TLS 同时在半空里攥着 16 KB 入缓冲,
+// 证书验签必然见底(见 app_net.c 里 0x4290 那段注释)。
+//
+// referer 可以为 NULL。调用方自己保证 buf 足够大:超出 cap 的部分会被丢掉,
+// 返回的字节数也就小于 Content-Length,由调用方判断算不算截断。
+int app_net_fetch_binary(const char *url, const char *referer,
+                         uint8_t *buf, size_t cap);
+
+// 叫醒详情任务。拉赛况和拉队徽都由它跑,所以这个函数对两者都有效:
+// 队徽模块靠它把自己排的活推下去(见 app_crest.c)。任务还没建成功时是空操作。
+void app_net_wake_detail(void);
+
 // 确保射频已启动。配网门户要开热点,而"从没配过网"的设备此时 STA 还没起来。
 bool app_net_wifi_ready(void);
 

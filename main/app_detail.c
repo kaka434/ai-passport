@@ -484,8 +484,10 @@ static bool parse_events(jcur_t *c, app_detail_t *out) {
 
 // ---------------------------------------------------------------- statistics
 
-// {"id":"…","name":"…","formation":"4-3-3",…} —— 只取 formation。
-static bool parse_team_object(jcur_t *c, char *formation, size_t cap) {
+// {"id":"…","name":"…","logo":"https://…","formation":"4-3-3",…} —— 只取 logo。
+// logo 原图是 150×150 的调色板 PNG,直接解要 90 KB,下不动,所以只存 URL,
+// 由 app_crest 带 ?imageView2/2/w/32 去 CDN 取缩略图。
+static bool parse_team_object(jcur_t *c, char *logo, size_t cap) {
     if (!j_peek(c, '{')) return false;
     j_ws(c);
     if (j_peek(c, '}')) return true;
@@ -495,8 +497,8 @@ static bool parse_team_object(jcur_t *c, char *formation, size_t cap) {
         if (!j_string(c, key, sizeof(key))) return false;
         if (!j_peek(c, ':')) return false;
 
-        if (strcmp(key, "formation") == 0) {
-            if (!j_text(c, formation, cap)) return false;
+        if (strcmp(key, "logo") == 0) {
+            if (!j_text(c, logo, cap)) return false;
         } else if (!j_skip_value(c)) {
             return false;
         }
@@ -598,11 +600,11 @@ static bool parse_statistics(jcur_t *c, app_detail_t *out) {
         if (!j_peek(c, ':')) return false;
 
         if (strcmp(key, "team_A") == 0) {
-            if (!parse_team_object(c, out->formation_home, sizeof(out->formation_home))) {
+            if (!parse_team_object(c, out->logo_home, sizeof(out->logo_home))) {
                 return false;
             }
         } else if (strcmp(key, "team_B") == 0) {
-            if (!parse_team_object(c, out->formation_away, sizeof(out->formation_away))) {
+            if (!parse_team_object(c, out->logo_away, sizeof(out->logo_away))) {
                 return false;
             }
         } else if (strcmp(key, "list") == 0) {
