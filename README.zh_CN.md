@@ -42,6 +42,14 @@
 欧冠、利物浦 4-3 比利亚雷亚尔的进球时间轴（球员名不再是问号），以及带自动息屏与
 亮度的设置页。
 
+| 首页菜单 · WiFi 状态 | 联赛选择 |
+| :---: | :---: |
+| ![首页菜单](docs/assets/football-live-board-home.jpg) | ![联赛选择](docs/assets/football-live-board-leagues.jpg) |
+
+| 联赛积分榜 | 关注球队 · 官方队徽 |
+| :---: | :---: |
+| ![联赛积分榜](docs/assets/football-live-board-standings.jpg) | ![关注球队](docs/assets/football-live-board-favorite.jpg) |
+
 | 比分页 · 明天 | 回看 · 前一天 |
 | :---: | :---: |
 | ![比分页](docs/assets/football-live-board-tomorrow.jpg) | ![回看页](docs/assets/football-live-board-replay.jpg) |

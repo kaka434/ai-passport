@@ -54,6 +54,14 @@ the previous day's nine Champions League results reached by paging back, the goa
 timeline of Liverpool 4-3 Villarreal (player names now render instead of `?`), and
 the settings screen with auto screen-off and brightness.
 
+| Home menu · WiFi indicator | League selection |
+| :---: | :---: |
+| ![Home menu](docs/assets/football-live-board-home.jpg) | ![League selection](docs/assets/football-live-board-leagues.jpg) |
+
+| Standings | Favorite team · crest |
+| :---: | :---: |
+| ![Standings](docs/assets/football-live-board-standings.jpg) | ![Favorite team](docs/assets/football-live-board-favorite.jpg) |
+
 | Scores · tomorrow | Replay · previous day |
 | :---: | :---: |
 | ![Scores tomorrow](docs/assets/football-live-board-tomorrow.jpg) | ![Replay](docs/assets/football-live-board-replay.jpg) |
