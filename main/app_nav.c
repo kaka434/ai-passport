@@ -150,9 +150,17 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
             return APP_ACT_NONE;
         }
         const int before = nav->sel;
-        nav->sel += (input == APP_INPUT_UP) ? -1 : 1;
-        if (nav->sel < 0) nav->sel = 0;
-        if (nav->sel > item_count - 1) nav->sel = item_count - 1;
+        if (input == APP_INPUT_UP) {
+            nav->sel--;
+            if (nav->sel < 0) {
+                nav->sel = item_count - 1; // 顶部按上回到底部
+            }
+        } else {
+            nav->sel++;
+            if (nav->sel > item_count - 1) {
+                nav->sel = 0;              // 底部按下回到顶部
+            }
+        }
         follow_selection(nav, item_count, visible_rows);
         return nav->sel == before ? APP_ACT_NONE : APP_ACT_REDRAW;
     }
