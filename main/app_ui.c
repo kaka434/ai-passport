@@ -1,3 +1,4 @@
+#include "app_standings.h"
 // main/app_ui.c
 // 看板界面实现。
 //
@@ -44,6 +45,13 @@
 #include <string.h>
 
 static const char *TAG = "app_ui";
+
+static app_standings_snapshot_t s_standings_snap;
+static uint32_t s_standings_rev = 0;
+static uint32_t s_curr_season_id = 27502;
+static char s_curr_league_name[16] = "英超";
+
+
 
 // ---------------------------------------------------------------- 配色与尺寸
 
@@ -124,6 +132,8 @@ static const char *TAG = "app_ui";
 // 「自动息屏」和「屏幕亮度」这两个设置)。界面这边不再自己压背光,否则
 // 每次按键都把亮度写回 100%,用户设的 25% 会立刻失效。
 
+
+
 static lv_obj_t *s_scr;
 static lv_obj_t *s_body;
 static lv_obj_t *s_battery;
@@ -131,6 +141,8 @@ static lv_obj_t *s_wifi_dot;
 static lv_obj_t *s_footer;
 static lv_obj_t *s_title;      // 页头标题:随页面变(比赛看板 / 联赛名 / 设置)
 static lv_timer_t *s_timer;
+
+
 
 static app_nav_t s_nav;
 static app_config_t s_cfg;
@@ -282,6 +294,19 @@ static void update_footer(void) {
     }
 
     switch (s_nav.page) {
+        case APP_PAGE_HOME:
+            lv_label_set_text(s_footer, "▲/▼ 切换 · OK 进入 · 长按设置");
+            break;
+        case APP_PAGE_LEAGUES:
+            lv_label_set_text(s_footer, "▲/▼ 切换 · OK 查看 · 长按返回");
+            break;
+        case APP_PAGE_STANDINGS: {
+            char f_str[64];
+            snprintf(f_str, sizeof(f_str), "%d/%d · OK 刷新 · 长按返回",
+                     s_nav.sel + 1, s_standings_snap.team_count > 0 ? s_standings_snap.team_count : 1);
+            lv_label_set_text(s_footer, f_str);
+            break;
+        }
         case APP_PAGE_SETTINGS:
             lv_label_set_text(s_footer, "OK 执行 · 长按回比分");
             break;
@@ -327,6 +352,168 @@ static void update_footer(void) {
         }
     }
     lv_obj_set_style_text_color(s_footer, lv_color_hex(C_MUTED), 0);
+}
+
+
+// ---------------------------------------------------------------- 页面:引导主菜单
+
+static const char *s_home_titles[APP_MENU_ITEM_COUNT] = {
+    "比赛看板",
+    "联赛积分榜",
+    "关注球队",
+};
+
+static const char *s_home_descs[APP_MENU_ITEM_COUNT] = {
+    "实时比分 / 近期赛程 / 赛况详情",
+    "五大联赛 · 欧冠 · 中超中甲",
+    "主队赛果与赛季全比分数据",
+};
+
+static lv_obj_t *s_home_cards[APP_MENU_ITEM_COUNT];
+
+static void home_select(int index) {
+    for (int i = 0; i < APP_MENU_ITEM_COUNT; i++) {
+        if (s_home_cards[i] == NULL) continue;
+        const bool selected = (i == index);
+        lv_obj_set_style_bg_color(s_home_cards[i], lv_color_hex(selected ? C_PANEL_HI : C_PANEL), 0);
+        lv_obj_set_style_border_color(s_home_cards[i], lv_color_hex(selected ? C_ACCENT : C_PANEL_HI), 0);
+        lv_obj_set_style_border_width(s_home_cards[i], selected ? 2 : 1, 0);
+    }
+}
+
+static void build_home(void) {
+    memset(s_home_cards, 0, sizeof(s_home_cards));
+    const int card_h = 70;
+    const int gap = 8;
+    const int start_y = 6;
+
+    for (int i = 0; i < APP_MENU_ITEM_COUNT; i++) {
+        const int y = start_y + i * (card_h + gap);
+        const bool selected = (i == s_nav.sel);
+        lv_obj_t *card = panel(s_body, 8, y, SCR_W - 16, card_h,
+                               selected ? C_PANEL_HI : C_PANEL, 8);
+        if (card == NULL) continue;
+        s_home_cards[i] = card;
+
+        lv_obj_set_style_border_color(card, lv_color_hex(selected ? C_ACCENT : C_PANEL_HI), 0);
+        lv_obj_set_style_border_width(card, selected ? 2 : 1, 0);
+
+        clipped_text(card, APP_FONT_BODY, selected ? C_ACCENT : C_TEXT,
+                     s_home_titles[i], 12, 12, SCR_W - 40, 20, LV_TEXT_ALIGN_LEFT);
+
+        clipped_text(card, APP_FONT_SMALL, C_MUTED,
+                     s_home_descs[i], 12, 38, SCR_W - 40, 18, LV_TEXT_ALIGN_LEFT);
+    }
+}
+
+
+// ---------------------------------------------------------------- 页面:联赛选择与积分榜
+static lv_obj_t *s_league_rows[APP_LEAGUES_COUNT];
+#define STANDINGS_VISIBLE_ROWS 8
+
+static void build_leagues(void) {
+    memset(s_league_rows, 0, sizeof(s_league_rows));
+    const int row_h = 28;
+    const int gap = 4;
+    const int y0 = 6;
+
+    for (int i = 0; i < APP_LEAGUES_COUNT; i++) {
+        const int y = y0 + i * (row_h + gap);
+        const bool sel = (i == s_nav.sel);
+        lv_obj_t *r = panel(s_body, 8, y, SCR_W - 16, row_h, sel ? C_PANEL_HI : C_PANEL, 6);
+        if (r == NULL) continue;
+        s_league_rows[i] = r;
+
+        lv_obj_set_style_border_color(r, lv_color_hex(sel ? C_ACCENT : C_PANEL_HI), 0);
+        lv_obj_set_style_border_width(r, sel ? 2 : 1, 0);
+
+        clipped_text(r, APP_FONT_BODY, sel ? C_ACCENT : C_TEXT,
+                     APP_LEAGUES[i].name, 12, 4, 120, 20, LV_TEXT_ALIGN_LEFT);
+
+        clipped_text(r, APP_FONT_SMALL, C_MUTED,
+                     "积分榜", SCR_W - 70, 6, 50, 16, LV_TEXT_ALIGN_RIGHT);
+    }
+}
+
+static void leagues_select(int idx) {
+    for (int i = 0; i < APP_LEAGUES_COUNT; i++) {
+        if (s_league_rows[i] == NULL) continue;
+        const bool sel = (i == idx);
+        lv_obj_set_style_bg_color(s_league_rows[i], lv_color_hex(sel ? C_PANEL_HI : C_PANEL), 0);
+        lv_obj_set_style_border_color(s_league_rows[i], lv_color_hex(sel ? C_ACCENT : C_PANEL_HI), 0);
+        lv_obj_set_style_border_width(s_league_rows[i], sel ? 2 : 1, 0);
+    }
+}
+
+static void build_standings(void) {
+    app_standings_snapshot_copy(&s_standings_snap);
+    s_standings_rev = app_standings_revision();
+
+    if (s_standings_snap.loading) {
+        clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "正在获取积分榜...", 0, 100, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
+        return;
+    }
+    if (s_standings_snap.error || s_standings_snap.team_count == 0) {
+        clipped_text(s_body, APP_FONT_BODY, C_LIVE, "获取积分榜失败", 0, 90, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "请按 OK 键重试", 0, 125, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
+        return;
+    }
+
+    // 表头: 排名 / 球队 / 赛 / 胜平负 / 积分
+    lv_obj_t *th = panel(s_body, 4, 2, SCR_W - 8, 20, C_HEADER, 4);
+    if (th != NULL) {
+        clipped_text(th, APP_FONT_SMALL, C_MUTED, "#", 4, 2, 20, 16, LV_TEXT_ALIGN_CENTER);
+        clipped_text(th, APP_FONT_SMALL, C_MUTED, "球队", 28, 2, 90, 16, LV_TEXT_ALIGN_LEFT);
+        clipped_text(th, APP_FONT_SMALL, C_MUTED, "赛", 122, 2, 24, 16, LV_TEXT_ALIGN_CENTER);
+        clipped_text(th, APP_FONT_SMALL, C_MUTED, "胜/平/负", 148, 2, 48, 16, LV_TEXT_ALIGN_CENTER);
+        clipped_text(th, APP_FONT_SMALL, C_ACCENT, "分", 200, 2, 28, 16, LV_TEXT_ALIGN_CENTER);
+    }
+
+    const int row_h = 26;
+    const int start_y = 26;
+    const int start_idx = s_nav.scroll;
+    const int count = s_standings_snap.team_count;
+
+    for (int r = 0; r < STANDINGS_VISIBLE_ROWS; r++) {
+        const int idx = start_idx + r;
+        if (idx >= count) break;
+        const app_standing_team_t *tm = &s_standings_snap.teams[idx];
+        const bool sel = (idx == s_nav.sel);
+        const int y = start_y + r * (row_h + 2);
+
+        lv_obj_t *row = panel(s_body, 4, y, SCR_W - 8, row_h, sel ? C_PANEL_HI : C_PANEL, 4);
+        if (row == NULL) continue;
+        if (sel) {
+            lv_obj_set_style_border_color(row, lv_color_hex(C_ACCENT), 0);
+            lv_obj_set_style_border_width(row, 1, 0);
+        }
+
+        // 排名
+        char rank_str[8];
+        snprintf(rank_str, sizeof(rank_str), "%d", tm->rank);
+        uint32_t rank_col = (tm->rank <= 3) ? C_AMBER : C_MUTED;
+        clipped_text(row, APP_FONT_SMALL, rank_col, rank_str, 2, 5, 22, 16, LV_TEXT_ALIGN_CENTER);
+
+        // 队名
+        char name_buf[32];
+        app_fonts_sanitize(tm->team_name, name_buf, sizeof(name_buf));
+        clipped_text(row, APP_FONT_SMALL, sel ? C_ACCENT : C_TEXT, name_buf, 28, 5, 92, 16, LV_TEXT_ALIGN_LEFT);
+
+        // 已赛场次
+        char p_str[8];
+        snprintf(p_str, sizeof(p_str), "%d", tm->played);
+        clipped_text(row, APP_FONT_SMALL, C_MUTED, p_str, 122, 5, 24, 16, LV_TEXT_ALIGN_CENTER);
+
+        // 胜/平/负
+        char record[16];
+        snprintf(record, sizeof(record), "%d/%d/%d", tm->won, tm->draw, tm->lost);
+        clipped_text(row, APP_FONT_SMALL, C_MUTED, record, 146, 5, 52, 16, LV_TEXT_ALIGN_CENTER);
+
+        // 积分
+        char pts_str[8];
+        snprintf(pts_str, sizeof(pts_str), "%d", tm->points);
+        clipped_text(row, APP_FONT_BODY, C_ACCENT, pts_str, 198, 3, 30, 20, LV_TEXT_ALIGN_CENTER);
+    }
 }
 
 // ---------------------------------------------------------------- 页面:比分
@@ -1227,6 +1414,9 @@ static void leave_portal(void) {
 
 static int visible_rows(void) {
     switch (s_nav.page) {
+        case APP_PAGE_HOME: return APP_MENU_ITEM_COUNT;
+        case APP_PAGE_LEAGUES: return APP_LEAGUES_COUNT;
+        case APP_PAGE_STANDINGS: return STANDINGS_VISIBLE_ROWS;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_WIFI_LIST: return AP_ROWS;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
@@ -1239,6 +1429,9 @@ static int visible_rows(void) {
 
 static int current_item_count(void) {
     switch (s_nav.page) {
+        case APP_PAGE_HOME: return APP_MENU_ITEM_COUNT;
+        case APP_PAGE_LEAGUES: return APP_LEAGUES_COUNT;
+        case APP_PAGE_STANDINGS: return s_standings_snap.team_count;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_WIFI_LIST: return (int)s_ap_count;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
@@ -1259,6 +1452,15 @@ static void update_title(void) {
     char day_label[40];
 
     switch (s_nav.page) {
+        case APP_PAGE_HOME:
+            value = "首页";
+            break;
+        case APP_PAGE_LEAGUES:
+            value = "选择联赛";
+            break;
+        case APP_PAGE_STANDINGS:
+            value = s_curr_league_name;
+            break;
         case APP_PAGE_DETAIL:
             app_fonts_sanitize(s_detail_match.league, league, sizeof(league));
             value = league[0] != '\0' ? league : "比赛详情";
@@ -1318,6 +1520,17 @@ static void build_body(void) {
     lv_obj_clean(s_body);
 
     switch (s_nav.page) {
+        case APP_PAGE_HOME:
+            if (s_nav.sel > APP_MENU_ITEM_COUNT - 1) s_nav.sel = APP_MENU_ITEM_COUNT - 1;
+            build_home();
+            break;
+        case APP_PAGE_LEAGUES:
+            if (s_nav.sel > APP_LEAGUES_COUNT - 1) s_nav.sel = APP_LEAGUES_COUNT - 1;
+            build_leagues();
+            break;
+        case APP_PAGE_STANDINGS:
+            build_standings();
+            break;
         case APP_PAGE_SETTINGS:
             if (s_nav.sel > APP_SET_ROW_COUNT - 1) s_nav.sel = APP_SET_ROW_COUNT - 1;
             build_settings();
@@ -1455,6 +1668,12 @@ static void on_tick(lv_timer_t *timer) {
     }
 
     // 手机配网页:连接结果由门户的守护任务推进,这里只跟着版本号重画。
+    if (s_nav.page == APP_PAGE_STANDINGS) {
+        const uint32_t rev = app_standings_revision();
+        if (rev != s_standings_rev) {
+            build_body();
+        }
+    }
     if (s_nav.page == APP_PAGE_PORTAL) {
         const uint32_t portal_rev = app_portal_revision();
         if (portal_rev != s_portal_revision) {
@@ -1535,6 +1754,14 @@ void app_ui_handle_input(app_input_t input) {
         case APP_ACT_REDRAW:
             // 设置页里上下翻行只是换了选中项:直接改颜色,不重建。
             // 其它页面的 REDRAW 一律走整页重建。
+            if (s_nav.page == APP_PAGE_HOME && s_home_cards[0] != NULL) {
+                home_select((int)s_nav.sel);
+                break;
+            }
+            if (s_nav.page == APP_PAGE_LEAGUES && s_league_rows[0] != NULL) {
+                leagues_select((int)s_nav.sel);
+                break;
+            }
             if (s_nav.page == APP_PAGE_SETTINGS && s_set_rows[0] != NULL) {
                 settings_select((int)s_nav.sel);
                 break;
@@ -1544,7 +1771,25 @@ void app_ui_handle_input(app_input_t input) {
         case APP_ACT_SETTING:
             handle_setting(s_nav.sel);
             break;
+        case APP_ACT_LEAGUE_PICK:
+            if (s_nav.sel >= 0 && s_nav.sel < APP_LEAGUES_COUNT) {
+                s_curr_season_id = APP_LEAGUES[s_nav.sel].season_id;
+                snprintf(s_curr_league_name, sizeof(s_curr_league_name), "%s", APP_LEAGUES[s_nav.sel].name);
+                app_standings_fetch(s_curr_season_id, s_curr_league_name);
+                app_nav_goto(&s_nav, APP_PAGE_STANDINGS);
+                build_body();
+            }
+            break;
+        case APP_ACT_STANDINGS_BACK:
+            build_body();
+            break;
         case APP_ACT_REFRESH:
+            if (s_nav.page == APP_PAGE_STANDINGS) {
+                app_standings_fetch(s_curr_season_id, s_curr_league_name);
+                toast("正在刷新积分榜…");
+                update_footer();
+                break;
+            }
             app_net_request_refresh();
             toast("正在刷新比分…");
             update_footer();
@@ -1619,6 +1864,7 @@ void app_ui_set_battery(int soc) {
 }
 
 void app_ui_init(void) {
+    app_standings_init();
     app_nav_init(&s_nav);
     app_settings_get(&s_cfg);
     app_net_snapshot_copy(&s_snap);

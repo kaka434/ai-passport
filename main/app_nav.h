@@ -32,9 +32,20 @@
 // 详情页的子页数量:0 = 进球时间轴,1 = 阵型与技术统计。
 #define APP_DETAIL_PAGES 2
 
+// 引导主菜单项
 typedef enum {
-    APP_PAGE_SCORES = 0,
+    APP_MENU_SCORES = 0,     // 比赛看板
+    APP_MENU_STANDINGS,      // 联赛积分榜
+    APP_MENU_FAVORITE,       // 关注球队
+    APP_MENU_ITEM_COUNT,
+} app_menu_item_t;
+
+typedef enum {
+    APP_PAGE_HOME = 0,       // 引导主菜单页
+    APP_PAGE_SCORES,
     APP_PAGE_DETAIL,
+    APP_PAGE_LEAGUES,        // 联赛选择列表
+    APP_PAGE_STANDINGS,      // 积分榜表格
     APP_PAGE_SETTINGS,
     APP_PAGE_WIFI_LIST,
     APP_PAGE_WIFI_PASS,
@@ -64,6 +75,8 @@ typedef enum {
     APP_ACT_PORTAL_BACK,     // 手机配网页里长按,已切回设置页
     APP_ACT_DAY_PREV,        // 比分页首项按上,切到前一日(回看)
     APP_ACT_DAY_NEXT,        // 比分页末项按下,切回后一日
+    APP_ACT_LEAGUE_PICK,     // 选中联赛进入积分榜
+    APP_ACT_STANDINGS_BACK,  // 积分榜返回联赛选择
 } app_act_t;
 
 typedef struct {

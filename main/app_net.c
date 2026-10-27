@@ -1276,6 +1276,71 @@ int app_net_fetch_binary(const char *url, const char *referer,
     return got;
 }
 
+int app_net_fetch_alloc(const char *url, const char *referer,
+                        char **out_buf, size_t cap) {
+    if (url == NULL || out_buf == NULL || cap == 0u) return -1;
+    *out_buf = NULL;
+    if (!s_sta_connected) return -2;
+    if (!ensure_time_synced()) return -3;
+    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+
+    char *buf = malloc(cap + 1);
+    if (buf == NULL) {
+        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        return -5;
+    }
+
+    int got = -1;
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+        .user_agent = APP_FEED_UA,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == NULL) {
+        free(buf);
+        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        return -4;
+    }
+    if (referer != NULL) esp_http_client_set_header(client, "Referer", referer);
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGW(TAG, "打开连接失败:%s", url);
+    } else {
+        (void)esp_http_client_fetch_headers(client);
+        const int status = esp_http_client_get_status_code(client);
+        if (status != 200) {
+            ESP_LOGW(TAG, "HTTP %d:%s", status, url);
+        } else {
+            size_t total = 0;
+            while (total < cap) {
+                const int n = esp_http_client_read(client, buf + total, (int)(cap - total));
+                if (n < 0) {
+                    ESP_LOGW(TAG, "读取出错:%s", url);
+                    break;
+                }
+                if (n == 0) break;
+                total += (size_t)n;
+            }
+            got = (int)total;
+            buf[total] = '\0';
+        }
+        esp_http_client_close(client);
+    }
+    esp_http_client_cleanup(client);
+    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+
+    if (got > 0) {
+        *out_buf = buf;
+    } else {
+        free(buf);
+    }
+    return got;
+}
+
 // ---------------------------------------------------------------- 工作任务
 
 static bool wait_for_link(uint32_t timeout_ms) {

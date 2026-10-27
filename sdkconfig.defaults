@@ -44,7 +44,7 @@ CONFIG_LV_USE_FONT_PLACEHOLDER=y
 # 实测堆被压到只剩一两百字节,那一下 256 字节的 mbedtls_mpi_grow 就失败,表现为
 # "PK verify failed with error 0x4290" 后握手被 fatal alert 断掉。8 KB 的实测收益:
 # 首尝失败率从约 10% 掉到 0(10 次开机 0 次)。
-CONFIG_LV_MEM_SIZE_KILOBYTES=32
+CONFIG_LV_MEM_SIZE_KILOBYTES=20
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000

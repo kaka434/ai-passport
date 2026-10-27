@@ -5,7 +5,7 @@
 
 void app_nav_init(app_nav_t *nav) {
     if (nav == NULL) return;
-    nav->page = APP_PAGE_SCORES;
+    nav->page = APP_PAGE_HOME;
     nav->sel = 0;
     nav->scroll = 0;
     nav->sub = 0;
@@ -53,14 +53,23 @@ static app_act_t detail_flip(app_nav_t *nav, app_input_t input) {
 // 长按确定:比分/设置互切,详情退回比分,热点页退回设置,密码页提交。
 static app_act_t long_press(app_nav_t *nav) {
     switch (nav->page) {
-        case APP_PAGE_SCORES:
+        case APP_PAGE_HOME:
             app_nav_goto(nav, APP_PAGE_SETTINGS);
+            return APP_ACT_PAGE_CHANGED;
+        case APP_PAGE_SCORES:
+            app_nav_goto(nav, APP_PAGE_HOME);
             return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_DETAIL:
             app_nav_goto(nav, APP_PAGE_SCORES);
             return APP_ACT_DETAIL_BACK;
+        case APP_PAGE_LEAGUES:
+            app_nav_goto(nav, APP_PAGE_HOME);
+            return APP_ACT_PAGE_CHANGED;
+        case APP_PAGE_STANDINGS:
+            app_nav_goto(nav, APP_PAGE_LEAGUES);
+            return APP_ACT_STANDINGS_BACK;
         case APP_PAGE_SETTINGS:
-            app_nav_goto(nav, APP_PAGE_SCORES);
+            app_nav_goto(nav, APP_PAGE_HOME);
             return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_WIFI_LIST:
             app_nav_goto(nav, APP_PAGE_SETTINGS);
@@ -121,6 +130,19 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
 
     // 单击确定。每页的语义是固定的,所以这里不需要 item_count 参与判断。
     switch (nav->page) {
+        case APP_PAGE_HOME:
+            if (nav->sel == APP_MENU_SCORES) {
+                app_nav_goto(nav, APP_PAGE_SCORES);
+                return APP_ACT_PAGE_CHANGED;
+            } else if (nav->sel == APP_MENU_STANDINGS) {
+                app_nav_goto(nav, APP_PAGE_LEAGUES);
+                return APP_ACT_PAGE_CHANGED;
+            }
+            return APP_ACT_SETTING; // APP_MENU_FAVORITE
+        case APP_PAGE_LEAGUES:
+            return APP_ACT_LEAGUE_PICK;
+        case APP_PAGE_STANDINGS:
+            return APP_ACT_REFRESH; // 积分榜里单击 OK 为刷新
         case APP_PAGE_SETTINGS:
             return APP_ACT_SETTING;
         case APP_PAGE_WIFI_LIST:

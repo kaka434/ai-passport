@@ -119,6 +119,7 @@ int8_t app_net_view_day(void);
 //
 // referer 可以为 NULL。调用方自己保证 buf 足够大:超出 cap 的部分会被丢掉,
 // 返回的字节数也就小于 Content-Length,由调用方判断算不算截断。
+int app_net_fetch_alloc(const char *url, const char *referer, char **out_buf, size_t cap);
 int app_net_fetch_binary(const char *url, const char *referer,
                          uint8_t *buf, size_t cap);
 

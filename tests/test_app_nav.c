@@ -9,7 +9,7 @@
 static void test_init(void) {
     app_nav_t nav;
     app_nav_init(&nav);
-    assert(nav.page == APP_PAGE_SCORES);
+    assert(nav.page == APP_PAGE_HOME);
     assert(nav.sel == 0);
     assert(nav.scroll == 0);
 
@@ -19,6 +19,7 @@ static void test_init(void) {
 static void test_selection_moves_and_clamps(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    nav.page = APP_PAGE_SCORES;
 
     assert(app_nav_handle(&nav, APP_INPUT_DOWN, 3, ROWS) == APP_ACT_REDRAW);
     assert(nav.sel == 1);
@@ -42,6 +43,7 @@ static void test_selection_moves_and_clamps(void) {
 static void test_day_flip_at_edges(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    nav.page = APP_PAGE_SCORES;
 
     // 首项按上:回看前一日,并且把选中项和窗口都复位(换了一份列表)。
     nav.sel = 0;
@@ -75,6 +77,7 @@ static void test_day_flip_at_edges(void) {
 static void test_empty_list_still_allows_day_flip(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    nav.page = APP_PAGE_SCORES;
 
     // 列表为空时两个方向都放行 —— 否则"今天一场都没有"的日子根本进不去回看。
     assert(app_nav_handle(&nav, APP_INPUT_DOWN, 0, ROWS) == APP_ACT_DAY_NEXT);
@@ -89,6 +92,7 @@ static void test_empty_list_still_allows_day_flip(void) {
 static void test_scroll_window_follows_selection(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    nav.page = APP_PAGE_SCORES;
 
     // 12 条数据、一次看 5 行:选中项往下走到第 5 条时窗口才开始动。
     for (int i = 1; i < 5; i++) {
@@ -136,6 +140,7 @@ static void test_scroll_clamped_when_list_shrinks(void) {
 static void test_ok_actions_per_page(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    nav.page = APP_PAGE_SCORES;
 
     // 比分页:确定 = 打开选中场次的详情(手动刷新让位给了设置页那一行)。
     assert(app_nav_handle(&nav, APP_INPUT_OK, 8, ROWS) == APP_ACT_DETAIL_OPEN);
@@ -177,18 +182,22 @@ static void test_detail_page(void) {
 static void test_long_press_toggles_pages(void) {
     app_nav_t nav;
     app_nav_init(&nav);
+    // 主菜单长按去设置页
+    assert(app_nav_handle(&nav, APP_INPUT_OK_LONG, 0, ROWS) == APP_ACT_PAGE_CHANGED);
+    assert(nav.page == APP_PAGE_SETTINGS);
+    assert(nav.sel == 0);
 
+    // 设置页长按回主菜单
+    assert(app_nav_handle(&nav, APP_INPUT_OK_LONG, 0, ROWS) == APP_ACT_PAGE_CHANGED);
+    assert(nav.page == APP_PAGE_HOME);
+    assert(nav.sel == 0);
+
+    // 比分页长按回主菜单
+    nav.page = APP_PAGE_SCORES;
     nav.sel = 4;
     nav.scroll = 2;
     assert(app_nav_handle(&nav, APP_INPUT_OK_LONG, 0, ROWS) == APP_ACT_PAGE_CHANGED);
-    assert(nav.page == APP_PAGE_SETTINGS);
-    // 切页必须复位选中项,否则设置页会从"第 5 行"开始,看起来像随机跳。
-    assert(nav.sel == 0);
-    assert(nav.scroll == 0);
-
-    nav.sel = 3;
-    assert(app_nav_handle(&nav, APP_INPUT_OK_LONG, 0, ROWS) == APP_ACT_PAGE_CHANGED);
-    assert(nav.page == APP_PAGE_SCORES);
+    assert(nav.page == APP_PAGE_HOME);
     assert(nav.sel == 0);
     assert(nav.scroll == 0);
 }

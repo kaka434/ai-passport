@@ -2,6 +2,8 @@
 #include "app_console.h"
 
 #include "app_net.h"
+#include "app_standings.h"
+#include "app_ui.h"
 
 #include "esp_console.h"
 #include "esp_log.h"
@@ -187,6 +189,54 @@ static int cmd_board(int argc, char **argv) {
     return 1;
 }
 
+static int cmd_standings(int argc, char **argv) {
+    if (argc < 2) {
+        printf("用法: standings <0..7 | print>\n");
+        for (int i = 0; i < APP_LEAGUES_COUNT; i++) {
+            printf("  %d: %s (season_id=%lu)\n", i, APP_LEAGUES[i].name, (unsigned long)APP_LEAGUES[i].season_id);
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "print") == 0) {
+        app_standings_snapshot_t snap;
+        app_standings_snapshot_copy(&snap);
+        printf("=== 积分榜快照: %s (season=%lu, 球队数=%d, loading=%d, error=%d) ===\n",
+               snap.title, (unsigned long)snap.season_id, snap.team_count, snap.loading, snap.error);
+        for (int i = 0; i < snap.team_count; i++) {
+            printf("#%d %s: %d场 胜%d平%d负%d 积分%d 净胜球%d (id=%lu)\n",
+                   snap.teams[i].rank, snap.teams[i].team_name,
+                   snap.teams[i].played, snap.teams[i].won, snap.teams[i].draw, snap.teams[i].lost,
+                   snap.teams[i].points, snap.teams[i].gd, (unsigned long)snap.teams[i].team_id);
+        }
+        return 0;
+    }
+    int idx = atoi(argv[1]);
+    if (idx < 0 || idx >= APP_LEAGUES_COUNT) {
+        printf("无效联赛序号 (0..%d)\n", APP_LEAGUES_COUNT - 1);
+        return 1;
+    }
+    printf("拉取联赛 [%s] (season_id=%lu)...\n", APP_LEAGUES[idx].name, (unsigned long)APP_LEAGUES[idx].season_id);
+    app_standings_fetch(APP_LEAGUES[idx].season_id, APP_LEAGUES[idx].name);
+    return 0;
+}
+
+static int cmd_key(int argc, char **argv) {
+    if (argc < 2) {
+        printf("用法: key <up | down | ok | back>\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "up") == 0) app_ui_handle_input(APP_INPUT_UP);
+    else if (strcmp(argv[1], "down") == 0) app_ui_handle_input(APP_INPUT_DOWN);
+    else if (strcmp(argv[1], "ok") == 0) app_ui_handle_input(APP_INPUT_OK);
+    else if (strcmp(argv[1], "back") == 0) app_ui_handle_input(APP_INPUT_OK_LONG);
+    else {
+        printf("未知按键: %s\n", argv[1]);
+        return 1;
+    }
+    printf("按键 [%s] 已触发\n", argv[1]);
+    return 0;
+}
+
 void app_console_start(const app_console_hooks_t *hooks) {
     s_hooks = hooks;
 
@@ -218,7 +268,23 @@ void app_console_start(const app_console_hooks_t *hooks) {
     };
 
     ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
+    const esp_console_cmd_t standings_cmd = {
+        .command = "standings",
+        .help = "积分榜测试: 0..7 或 print",
+        .hint = NULL,
+        .func = cmd_standings,
+    };
+    const esp_console_cmd_t key_cmd = {
+        .command = "key",
+        .help = "模拟按键: up / down / ok / back",
+        .hint = NULL,
+        .func = cmd_key,
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
     ESP_ERROR_CHECK(esp_console_cmd_register(&board_cmd));
+    ESP_ERROR_CHECK(esp_console_cmd_register(&standings_cmd));
+    ESP_ERROR_CHECK(esp_console_cmd_register(&key_cmd));
     ESP_ERROR_CHECK(esp_console_register_help_command());
 
     err = esp_console_start_repl(repl);
