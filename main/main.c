@@ -176,9 +176,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     // 上下键的 click/double 已经没用了(按下时处理过),再处理一次会走两格。
     if (btn != BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_DOUBLE)) return;
 
-    // OK 的双击同样没人接:当成两次独立动作没意义,折成一次单击,免得丢键。
+    // OK 的双击: 映射为双击事件投递给输入队列
     if (btn == BSP_BTN_OK && ev == BSP_BTN_DOUBLE) {
-        const input_event_t input = { .btn = btn, .event = BSP_BTN_CLICK };
+        const input_event_t input = { .btn = btn, .event = BSP_BTN_DOUBLE };
         (void)xQueueSend(s_input_queue, &input, 0);
         return;
     }
@@ -189,6 +189,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 }
 
 static bool map_input(const input_event_t *input, app_input_t *out) {
+    if (input->event == BSP_BTN_DOUBLE && input->btn == BSP_BTN_OK) {
+        *out = APP_INPUT_OK_DOUBLE;
+        return true;
+    }
     if (input->event == BSP_BTN_LONG) {
         // 只有"确定"长按有意义:切页 / 从详情返回。上下的长按忽略,避免误触。
         if (input->btn != BSP_BTN_OK) return false;
@@ -222,7 +226,8 @@ static void battery_task(void *arg) {
     for (;;) {
         // 读电量走共享 I2C,必须离开 LVGL 上下文;界面只负责显示。
         const int soc = bsp_battery_soc();
-        app_ui_set_battery(soc);
+        const int mv = bsp_battery_mv();
+        app_ui_set_battery(soc, mv);
         vTaskDelay(pdMS_TO_TICKS(BATTERY_POLL_MS));
     }
 }

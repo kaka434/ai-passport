@@ -20,5 +20,5 @@ void app_ui_handle_input(app_input_t input);
 // 配置被外部改动(串口命令/设置页)后调用,让设置页重画。
 void app_ui_notify_config_changed(void);
 
-// 电池读数不可用时传 -1,界面显示 "--" 而不是 0%。
-void app_ui_set_battery(int soc);
+// 电池读数不可用时传 -1,界面显示 "--" 而不是 0%。mv 为电压毫伏。
+void app_ui_set_battery(int soc, int mv);

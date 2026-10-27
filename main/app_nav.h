@@ -48,6 +48,7 @@ typedef enum {
     APP_PAGE_STANDINGS,      // 积分榜表格
     APP_PAGE_FAVORITE,       // 关注球队主队看板
     APP_PAGE_SETTINGS,
+    APP_PAGE_STATUS,         // 系统状态二级页
     APP_PAGE_WIFI_LIST,
     APP_PAGE_WIFI_PASS,
     APP_PAGE_PORTAL,
@@ -58,6 +59,7 @@ typedef enum {
     APP_INPUT_DOWN,
     APP_INPUT_OK,
     APP_INPUT_OK_LONG,
+    APP_INPUT_OK_DOUBLE,     // OK 双击
 } app_input_t;
 
 typedef enum {
@@ -65,7 +67,8 @@ typedef enum {
     APP_ACT_REDRAW,          // 选中项/滚动窗口/子页变了,重画
     APP_ACT_PAGE_CHANGED,    // 切页,整页重建
     APP_ACT_SETTING,         // 设置页里按了确定,sel 是行号
-    APP_ACT_REFRESH,         // 设置页的"立即刷新"行
+    APP_ACT_REFRESH,         // 立即刷新
+    APP_ACT_STATUS_OPEN,     // 打开系统状态二级页
     APP_ACT_WIFI_PICK,       // 热点列表里按了确定,sel 是行号
     APP_ACT_WIFI_BACK,       // 热点列表里长按,回到设置页
     APP_ACT_WIFI_CONNECT,    // 密码页里长按,提交密码并连接

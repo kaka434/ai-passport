@@ -74,6 +74,9 @@ static app_act_t long_press(app_nav_t *nav) {
         case APP_PAGE_SETTINGS:
             app_nav_goto(nav, APP_PAGE_HOME);
             return APP_ACT_PAGE_CHANGED;
+        case APP_PAGE_STATUS:
+            app_nav_goto(nav, APP_PAGE_SETTINGS);
+            return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_WIFI_LIST:
             app_nav_goto(nav, APP_PAGE_SETTINGS);
             return APP_ACT_WIFI_BACK;
@@ -93,10 +96,23 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
     if (item_count < 0) item_count = 0;
     if (visible_rows < 1) visible_rows = 1;
 
+    if (input == APP_INPUT_OK_DOUBLE) {
+        if (nav->page == APP_PAGE_HOME || nav->page == APP_PAGE_SCORES) {
+            return APP_ACT_REFRESH;
+        }
+        return APP_ACT_NONE;
+    }
+
     if (input == APP_INPUT_OK_LONG) return long_press(nav);
 
     // 密码页的方向键与确定键由界面交给键盘模型,这里只挡掉它们。
     if (nav->page == APP_PAGE_WIFI_PASS) return APP_ACT_NONE;
+
+    // 系统状态页单屏展示: 按任意方向键退出回设置页
+    if (nav->page == APP_PAGE_STATUS && (input == APP_INPUT_UP || input == APP_INPUT_DOWN)) {
+        app_nav_goto(nav, APP_PAGE_SETTINGS);
+        return APP_ACT_PAGE_CHANGED;
+    }
 
     // 详情页的上下键是翻子页,不是移动列表选中项。
     if (nav->page == APP_PAGE_DETAIL && (input == APP_INPUT_UP || input == APP_INPUT_DOWN)) {
@@ -160,6 +176,9 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
             return APP_ACT_FAVORITE_PICK; // 积分榜里单击 OK 设为主队
         case APP_PAGE_SETTINGS:
             return APP_ACT_SETTING;
+        case APP_PAGE_STATUS:
+            app_nav_goto(nav, APP_PAGE_SETTINGS);
+            return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_WIFI_LIST:
             return APP_ACT_WIFI_PICK;
         case APP_PAGE_DETAIL:

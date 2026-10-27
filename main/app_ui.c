@@ -142,18 +142,17 @@ static app_fav_team_t s_fav_team;
 static lv_obj_t *s_scr;
 static lv_obj_t *s_body;
 static lv_obj_t *s_battery;
-static lv_obj_t *s_wifi_dot;
+static lv_obj_t *s_wifi_bars[3];
 static lv_obj_t *s_footer;
 static lv_obj_t *s_title;      // 页头标题:随页面变(比赛看板 / 联赛名 / 设置)
 static lv_timer_t *s_timer;
-
-
 
 static app_nav_t s_nav;
 static app_config_t s_cfg;
 static app_snapshot_t s_snap;      // 界面自己的快照副本
 static uint32_t s_seen_revision;
 static int s_battery_soc = -1;
+static int s_battery_mv = -1;
 static bool s_config_dirty;
 
 // 设置页 8 行的句柄。翻行时只改这 8 行的颜色,不重建整页——重建一次要
@@ -279,13 +278,36 @@ static void update_header(void) {
         lv_label_set_text_fmt(s_battery, "%d%%", s_battery_soc);
     }
 
-    if (s_wifi_dot != NULL) {
-        uint32_t color = C_MUTED;
-        if (s_snap.state == APP_NET_READY) color = C_ACCENT;
-        else if (s_snap.state == APP_NET_ERROR) color = C_LIVE;
-        else if (s_snap.state == APP_NET_CONNECTING || s_snap.state == APP_NET_SYNCING
-                 || s_snap.state == APP_NET_FETCHING) color = C_AMBER;
-        lv_obj_set_style_bg_color(s_wifi_dot, lv_color_hex(color), 0);
+    if (s_wifi_bars[0] != NULL) {
+        if (!s_snap.wifi_connected) {
+            uint32_t c = C_MUTED;
+            if (s_snap.state == APP_NET_ERROR) {
+                c = C_LIVE;
+            } else if (s_snap.state == APP_NET_CONNECTING || s_snap.state == APP_NET_SYNCING
+                       || s_snap.state == APP_NET_FETCHING) {
+                c = C_AMBER;
+            }
+            for (int i = 0; i < 3; i++) {
+                if (s_wifi_bars[i] != NULL) {
+                    lv_obj_set_style_bg_color(s_wifi_bars[i], lv_color_hex(c), 0);
+                }
+            }
+        } else {
+            // 已连接: 根据 RSSI 显示阶梯强度
+            int active_bars = 1;
+            if (s_snap.rssi >= -60) {
+                active_bars = 3;
+            } else if (s_snap.rssi >= -75) {
+                active_bars = 2;
+            }
+            uint32_t active_color = (s_snap.state == APP_NET_FETCHING) ? C_AMBER : C_ACCENT;
+            for (int i = 0; i < 3; i++) {
+                if (s_wifi_bars[i] != NULL) {
+                    lv_obj_set_style_bg_color(s_wifi_bars[i],
+                        lv_color_hex(i < active_bars ? active_color : 0x334155), 0);
+                }
+            }
+        }
     }
 }
 
@@ -330,6 +352,9 @@ static void update_footer(void) {
         }
         case APP_PAGE_SETTINGS:
             lv_label_set_text(s_footer, "OK 执行 · 长按回比分");
+            break;
+        case APP_PAGE_STATUS:
+            lv_label_set_text(s_footer, "OK 返回 · 长按回比分");
             break;
         case APP_PAGE_DETAIL: {
             // 左:第几子页;右:三个键各干什么。详情页的上下键是翻页,
@@ -1152,12 +1177,12 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
                 snprintf(value, cap, "未配网");
             }
             break;
-        case APP_SET_ROW_IP:
-            snprintf(value, cap, "%s", s_snap.ip[0] ? s_snap.ip : "--");
-            break;
         case APP_SET_ROW_PORTAL:
             // 手机上配网,屏上只需要说"怎么做",所以这一行的右值给一句提示。
             snprintf(value, cap, "手机网页");
+            break;
+        case APP_SET_ROW_STATUS:
+            snprintf(value, cap, "OK 查看");
             break;
         case APP_SET_ROW_INTERVAL:
             snprintf(value, cap, "%u 秒", (unsigned)s_cfg.refresh_seconds);
@@ -1170,7 +1195,6 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
         case APP_SET_ROW_BRIGHTNESS:
             snprintf(value, cap, "%u%%", (unsigned)s_cfg.brightness_percent);
             break;
-        case APP_SET_ROW_REFRESH:
         case APP_SET_ROW_CLEAR:
             snprintf(value, cap, "OK 执行");
             break;
@@ -1180,7 +1204,7 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
     }
 }
 
-// 只改选中态,不重建对象。翻行走这条路:改 8 行颜色是几十微秒的事,
+// 只改选中态,不重建对象。翻行走这条路:改 7 行颜色是几十微秒的事,
 // 而重建整页要删掉再新建 30 多个对象、再全屏重绘一遍。
 static void settings_select(int sel) {
     for (int row = 0; row < APP_SET_ROW_COUNT; row++) {
@@ -1205,8 +1229,8 @@ static void settings_select(int sel) {
 
 static void build_settings(void) {
     static const char *const LABELS[APP_SET_ROW_COUNT] = {
-        "Wi-Fi 配网", "手机配网", "网络地址", "刷新间隔",
-        "自动息屏", "屏幕亮度", "立即刷新", "清除配网",
+        "Wi-Fi 配网", "手机配网", "系统状态", "刷新间隔",
+        "自动息屏", "屏幕亮度", "清除配网",
     };
 
     for (int row = 0; row < APP_SET_ROW_COUNT; row++) {
@@ -1231,6 +1255,128 @@ static void build_settings(void) {
         s_set_values[row] = clipped_text(item, APP_FONT_BODY,
                                          selected ? C_ACCENT : C_MUTED, value, 108,
                                          SET_ROW_TEXT_Y, 100, 20, LV_TEXT_ALIGN_RIGHT);
+    }
+}
+
+// ---------------------------------------------------------------- 页面:系统状态 (二级菜单)
+
+static void build_status(void) {
+    char s_clean[96];
+
+    // 卡片 1: Wi-Fi 网络
+    lv_obj_t *c1 = panel(s_body, 10, 4, SCR_W - 20, 48, C_PANEL, 8);
+    if (c1 != NULL) {
+        clipped_text(c1, APP_FONT_BODY, C_TEXT, "Wi-Fi 网络", 10, 5, 100, 18, LV_TEXT_ALIGN_LEFT);
+
+        char rssi_str[32];
+        if (!s_snap.wifi_connected) {
+            snprintf(rssi_str, sizeof(rssi_str), "未连接");
+        } else if (s_snap.rssi >= -60) {
+            snprintf(rssi_str, sizeof(rssi_str), "%d dBm 极佳", s_snap.rssi);
+        } else if (s_snap.rssi >= -75) {
+            snprintf(rssi_str, sizeof(rssi_str), "%d dBm 良好", s_snap.rssi);
+        } else {
+            snprintf(rssi_str, sizeof(rssi_str), "%d dBm 较弱", s_snap.rssi);
+        }
+        clipped_text(c1, APP_FONT_SMALL, s_snap.wifi_connected ? C_ACCENT : C_MUTED,
+                     rssi_str, 110, 6, 96, 16, LV_TEXT_ALIGN_RIGHT);
+
+        char line1[96];
+        if (s_snap.wifi_connected) {
+            snprintf(line1, sizeof(line1), "SSID: %s  IP: %s",
+                     s_snap.ssid[0] ? s_snap.ssid : "已连",
+                     s_snap.ip[0] ? s_snap.ip : "--");
+        } else {
+            snprintf(line1, sizeof(line1), "未连接路由器, 请在设置中配网");
+        }
+        app_fonts_sanitize(line1, s_clean, sizeof(s_clean));
+        clipped_text(c1, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
+    }
+
+    // 卡片 2: 懂球帝数据源
+    lv_obj_t *c2 = panel(s_body, 10, 56, SCR_W - 20, 48, C_PANEL, 8);
+    if (c2 != NULL) {
+        clipped_text(c2, APP_FONT_BODY, C_TEXT, "懂球帝数据源", 10, 5, 110, 18, LV_TEXT_ALIGN_LEFT);
+
+        const char *state_desc = "正常通信";
+        uint32_t state_col = C_ACCENT;
+        if (!s_snap.wifi_connected) {
+            state_desc = "网络断开";
+            state_col = C_MUTED;
+        } else if (s_snap.state == APP_NET_ERROR) {
+            state_desc = "连接失败";
+            state_col = C_LIVE;
+        } else if (s_snap.state == APP_NET_FETCHING) {
+            state_desc = "同步中…";
+            state_col = C_AMBER;
+        } else if (s_snap.state == APP_NET_SYNCING) {
+            state_desc = "校时中…";
+            state_col = C_AMBER;
+        } else if (s_snap.updated_at == 0) {
+            state_desc = "等待拉取";
+            state_col = C_MUTED;
+        }
+        clipped_text(c2, APP_FONT_SMALL, state_col, state_desc, 120, 6, 86, 16, LV_TEXT_ALIGN_RIGHT);
+
+        char line2[96];
+        if (s_snap.updated_at > 0) {
+            char clock[12];
+            app_format_clock(s_snap.updated_at, clock, sizeof(clock));
+            snprintf(line2, sizeof(line2), "sd.dongdianqiu.com 更新于 %s", clock);
+        } else if (s_snap.error[0]) {
+            snprintf(line2, sizeof(line2), "错误: %s", s_snap.error);
+        } else {
+            snprintf(line2, sizeof(line2), "sd.dongdianqiu.com (HTTP)");
+        }
+        app_fonts_sanitize(line2, s_clean, sizeof(s_clean));
+        clipped_text(c2, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
+    }
+
+    // 卡片 3: 电池与供电
+    lv_obj_t *c3 = panel(s_body, 10, 108, SCR_W - 20, 48, C_PANEL, 8);
+    if (c3 != NULL) {
+        clipped_text(c3, APP_FONT_BODY, C_TEXT, "电池与供电", 10, 5, 100, 18, LV_TEXT_ALIGN_LEFT);
+
+        char soc_str[24];
+        if (s_battery_soc < 0) {
+            snprintf(soc_str, sizeof(soc_str), "--%%");
+        } else {
+            snprintf(soc_str, sizeof(soc_str), "%d%%", s_battery_soc);
+        }
+        clipped_text(c3, APP_FONT_SMALL,
+                     (s_battery_soc > 20 || s_battery_soc < 0) ? C_ACCENT : C_LIVE,
+                     soc_str, 120, 6, 86, 16, LV_TEXT_ALIGN_RIGHT);
+
+        char line3[96];
+        if (s_battery_mv > 0) {
+            snprintf(line3, sizeof(line3), "电量计:CW2017  电压: %d mV", s_battery_mv);
+        } else {
+            snprintf(line3, sizeof(line3), "电量计:CW2017 (USB供电/检测中)");
+        }
+        app_fonts_sanitize(line3, s_clean, sizeof(s_clean));
+        clipped_text(c3, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
+    }
+
+    // 卡片 4: 设备运行状态
+    lv_obj_t *c4 = panel(s_body, 10, 160, SCR_W - 20, 48, C_PANEL, 8);
+    if (c4 != NULL) {
+        clipped_text(c4, APP_FONT_BODY, C_TEXT, "设备状态", 10, 5, 90, 18, LV_TEXT_ALIGN_LEFT);
+
+        uint32_t free_heap = esp_get_free_heap_size() / 1024;
+        char heap_str[24];
+        snprintf(heap_str, sizeof(heap_str), "堆 %u KB", (unsigned)free_heap);
+        clipped_text(c4, APP_FONT_SMALL, C_ACCENT, heap_str, 100, 6, 106, 16, LV_TEXT_ALIGN_RIGHT);
+
+        int64_t uptime_sec = esp_timer_get_time() / 1000000;
+        int up_h = (int)(uptime_sec / 3600);
+        int up_m = (int)((uptime_sec % 3600) / 60);
+        int up_s = (int)(uptime_sec % 60);
+
+        char line4[96];
+        snprintf(line4, sizeof(line4), "已运行 %02d:%02d:%02d  刷新周期:%us",
+                 up_h, up_m, up_s, (unsigned)s_cfg.refresh_seconds);
+        app_fonts_sanitize(line4, s_clean, sizeof(s_clean));
+        clipped_text(c4, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
     }
 }
 
@@ -1559,6 +1705,7 @@ static int visible_rows(void) {
         case APP_PAGE_STANDINGS: return STANDINGS_VISIBLE_ROWS;
         case APP_PAGE_FAVORITE: return 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
+        case APP_PAGE_STATUS: return 1;
         case APP_PAGE_WIFI_LIST: return AP_ROWS;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
         case APP_PAGE_DETAIL: return 1;   // 上下键是翻子页,不移动选中项
@@ -1575,6 +1722,7 @@ static int current_item_count(void) {
         case APP_PAGE_STANDINGS: return s_standings_snap.team_count;
         case APP_PAGE_FAVORITE: return 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
+        case APP_PAGE_STATUS: return 1;
         case APP_PAGE_WIFI_LIST: return (int)s_ap_count;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
         case APP_PAGE_DETAIL: return 1;
@@ -1612,6 +1760,9 @@ static void update_title(void) {
             break;
         case APP_PAGE_SETTINGS:
             value = "设置";
+            break;
+        case APP_PAGE_STATUS:
+            value = "系统状态";
             break;
         case APP_PAGE_WIFI_LIST:
             value = "选择网络";
@@ -1683,6 +1834,9 @@ static void build_body(void) {
             if (s_nav.sel > APP_SET_ROW_COUNT - 1) s_nav.sel = APP_SET_ROW_COUNT - 1;
             build_settings();
             break;
+        case APP_PAGE_STATUS:
+            build_status();
+            break;
         case APP_PAGE_DETAIL:
             build_detail();
             break;
@@ -1732,6 +1886,10 @@ static void handle_setting(int row) {
         case APP_SET_ROW_PORTAL:
             enter_portal();
             return;
+        case APP_SET_ROW_STATUS:
+            app_nav_goto(&s_nav, APP_PAGE_STATUS);
+            build_body();
+            return;
         case APP_SET_ROW_INTERVAL:
             app_config_cycle_refresh(&cfg);
             app_settings_apply(&cfg, false);
@@ -1747,17 +1905,12 @@ static void handle_setting(int row) {
             app_settings_apply(&cfg, false);
             s_cfg = cfg;
             break;
-        case APP_SET_ROW_REFRESH:
-            app_net_request_refresh();
-            toast("正在刷新比分…");
-            break;
         case APP_SET_ROW_CLEAR:
             memset(cfg.ssid, 0, sizeof(cfg.ssid));
             memset(cfg.pass, 0, sizeof(cfg.pass));
             app_settings_apply(&cfg, true);
             s_cfg = cfg;
             break;
-        case APP_SET_ROW_IP:
         default:
             break;
     }
@@ -2046,9 +2199,10 @@ void app_ui_notify_config_changed(void) {
     s_config_dirty = true;
 }
 
-void app_ui_set_battery(int soc) {
+void app_ui_set_battery(int soc, int mv) {
     if (!bsp_lvgl_lock(200)) return;
     s_battery_soc = soc;
+    s_battery_mv = mv;
     update_header();
     bsp_lvgl_unlock();
 }
@@ -2073,12 +2227,16 @@ void app_ui_init(void) {
     lv_obj_set_style_border_width(s_scr, 0, 0);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
 
-    // 页头:标题 + 联网状态点 + 电量
+    // 页头:标题 + 阶梯 Wi-Fi 信号 + 电量
     lv_obj_t *header = panel(s_scr, 0, 0, SCR_W, HEADER_H, C_HEADER, 0);
     s_title = clipped_text(header, APP_FONT_BODY, C_TEXT, "比赛看板", 14, 10, 140, 22,
                            LV_TEXT_ALIGN_LEFT);
 
-    s_wifi_dot = panel(header, 170, 16, 8, 8, C_MUTED, LV_RADIUS_CIRCLE);
+    // 阶梯式 Wi-Fi 图标: 3 根竖柱, 从左到右高度 5, 9, 13, 底部在 y=25 对齐
+    s_wifi_bars[0] = panel(header, 166, 20, 3, 5, C_MUTED, 1);
+    s_wifi_bars[1] = panel(header, 171, 16, 3, 9, C_MUTED, 1);
+    s_wifi_bars[2] = panel(header, 176, 12, 3, 13, C_MUTED, 1);
+
     s_battery = clipped_text(header, APP_FONT_BODY, C_MUTED, "--%", 184, 10, 44, 22,
                              LV_TEXT_ALIGN_RIGHT);
 

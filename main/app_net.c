@@ -1513,6 +1513,12 @@ void app_net_snapshot_copy(app_snapshot_t *out) {
     if (out == NULL) return;
     lock();
     *out = s_snapshot;
+    if (s_sta_connected) {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            out->rssi = ap_info.rssi;
+        }
+    }
     unlock();
 }
 
