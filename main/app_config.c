@@ -25,6 +25,7 @@ void app_config_defaults(app_config_t *cfg) {
     cfg->refresh_seconds = APP_REFRESH_DEFAULT;
     cfg->screen_off_seconds = APP_SCREEN_OFF_DEFAULT;
     cfg->brightness_percent = APP_BRIGHTNESS_DEFAULT;
+    cfg->theme_idx = APP_THEME_CLASSIC;
 }
 
 bool app_config_has_credentials(const app_config_t *cfg) {
@@ -110,4 +111,22 @@ bool app_config_validate_credentials(const char *ssid, const char *pass) {
         if ((unsigned char)*p < 0x20) return false;
     }
     return true;
+}
+
+void app_config_cycle_theme(app_config_t *cfg) {
+    if (cfg == NULL) return;
+    cfg->theme_idx = (cfg->theme_idx + 1) % APP_THEME_COUNT;
+}
+
+uint8_t app_config_clamp_theme(uint8_t idx) {
+    return idx < APP_THEME_COUNT ? idx : APP_THEME_CLASSIC;
+}
+
+const char *app_config_theme_name(uint8_t idx) {
+    switch (idx) {
+        case APP_THEME_PURPLE: return "英超紫晶";
+        case APP_THEME_CYBER:  return "赛博暗黑";
+        case APP_THEME_CLASSIC:
+        default:               return "绿茵经典";
+    }
 }

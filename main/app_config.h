@@ -12,6 +12,13 @@
 #define APP_SSID_MAX 32
 #define APP_PASS_MAX 64
 
+typedef enum {
+    APP_THEME_CLASSIC = 0, // 绿茵经典
+    APP_THEME_PURPLE,      // 英超紫晶
+    APP_THEME_CYBER,       // 赛博暗黑
+    APP_THEME_COUNT,
+} app_theme_id_t;
+
 typedef struct {
     char ssid[APP_SSID_MAX + 1];
     char pass[APP_PASS_MAX + 1];
@@ -21,6 +28,8 @@ typedef struct {
     uint16_t screen_off_seconds;
     // 背光亮度百分比,只有 25/50/75/100 四档(见 app_config_cycle_brightness)。
     uint8_t brightness_percent;
+    // 界面主题配色 (0: 绿茵经典, 1: 英超紫晶, 2: 赛博暗黑)
+    uint8_t theme_idx;
 } app_config_t;
 
 // 设置页的行顺序。界面按这个顺序画,按键按这个顺序命中。
@@ -28,6 +37,7 @@ typedef enum {
     APP_SET_ROW_WIFI = 0,
     APP_SET_ROW_PORTAL,      // 手机配网:开热点,手机浏览器里输密码
     APP_SET_ROW_STATUS,      // 系统状态:查看 IP、连通性、电量等
+    APP_SET_ROW_THEME,       // 界面主题:绿茵/紫晶/暗黑
     APP_SET_ROW_INTERVAL,
     APP_SET_ROW_SCREEN_OFF,  // 自动息屏
     APP_SET_ROW_BRIGHTNESS,  // 屏幕亮度
@@ -54,6 +64,11 @@ uint16_t app_config_clamp_screen_off(uint16_t seconds);
 // 亮度档位:25/50/75/100,循环。
 void app_config_cycle_brightness(app_config_t *cfg);
 uint8_t app_config_clamp_brightness(uint8_t percent);
+
+// 主题档位:绿茵经典/英超紫晶/赛博暗黑,循环。
+void app_config_cycle_theme(app_config_t *cfg);
+uint8_t app_config_clamp_theme(uint8_t idx);
+const char *app_config_theme_name(uint8_t idx);
 
 // 联网前的最小校验:长度、非空、不含控制字符。
 bool app_config_validate_credentials(const char *ssid, const char *pass);

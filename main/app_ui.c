@@ -54,22 +54,86 @@ static char s_curr_league_name[16] = "英超";
 
 static app_fav_snapshot_t s_fav_snap;
 static uint32_t s_fav_rev = 0;
-static app_fav_team_t s_fav_team;
+static app_fav_list_t s_fav_list;
+
+static inline app_fav_team_t *get_active_fav_team(void) {
+    if (s_fav_list.count == 0) return NULL;
+    if (s_fav_list.active_idx >= s_fav_list.count) s_fav_list.active_idx = 0;
+    return &s_fav_list.teams[s_fav_list.active_idx];
+}
 
 
 
 // ---------------------------------------------------------------- 配色与尺寸
 
-#define C_BG        0x07120C
-#define C_HEADER    0x0B1B13
-#define C_PANEL     0x11291D
-#define C_PANEL_HI  0x1B4631
-#define C_TEXT      0xF2F8F3
-#define C_TEAM      0xDCEBE2
-#define C_MUTED     0x7FA894
-#define C_ACCENT    0x3FD07A
-#define C_LIVE      0xFF5D5D
-#define C_AMBER     0xFFC24B
+typedef struct {
+    const char *name;
+    uint32_t bg;
+    uint32_t header;
+    uint32_t panel;
+    uint32_t panel_hi;
+    uint32_t text;
+    uint32_t team;
+    uint32_t muted;
+    uint32_t accent;
+    uint32_t live;
+    uint32_t amber;
+} app_palette_t;
+
+static const app_palette_t s_palettes[APP_THEME_COUNT] = {
+    [APP_THEME_CLASSIC] = {
+        .name = "绿茵经典",
+        .bg = 0x07120C,
+        .header = 0x0B1B13,
+        .panel = 0x11291D,
+        .panel_hi = 0x1B4631,
+        .text = 0xF2F8F3,
+        .team = 0xDCEBE2,
+        .muted = 0x7FA894,
+        .accent = 0x3FD07A,
+        .live = 0xFF5D5D,
+        .amber = 0xFFC24B,
+    },
+    [APP_THEME_PURPLE] = {
+        .name = "英超紫晶",
+        .bg = 0x10071C,
+        .header = 0x190C2C,
+        .panel = 0x21113B,
+        .panel_hi = 0x3B1F69,
+        .text = 0xFDF8FF,
+        .team = 0xE9D5FF,
+        .muted = 0x9D78B8,
+        .accent = 0x00FF87,
+        .live = 0xFF2A85,
+        .amber = 0xF0B90B,
+    },
+    [APP_THEME_CYBER] = {
+        .name = "赛博暗黑",
+        .bg = 0x08090C,
+        .header = 0x0F1117,
+        .panel = 0x131720,
+        .panel_hi = 0x202736,
+        .text = 0xF1F5F9,
+        .team = 0xCBD5E1,
+        .muted = 0x64748B,
+        .accent = 0x38BDF8,
+        .live = 0xF43F5E,
+        .amber = 0xF59E0B,
+    },
+};
+
+static const app_palette_t *s_curr_pal = &s_palettes[APP_THEME_CLASSIC];
+
+#define C_BG        (s_curr_pal->bg)
+#define C_HEADER    (s_curr_pal->header)
+#define C_PANEL     (s_curr_pal->panel)
+#define C_PANEL_HI  (s_curr_pal->panel_hi)
+#define C_TEXT      (s_curr_pal->text)
+#define C_TEAM      (s_curr_pal->team)
+#define C_MUTED     (s_curr_pal->muted)
+#define C_ACCENT    (s_curr_pal->accent)
+#define C_LIVE      (s_curr_pal->live)
+#define C_AMBER     (s_curr_pal->amber)
 
 #define SCR_W 240
 #define SCR_H 320
@@ -94,10 +158,10 @@ static app_fav_team_t s_fav_team;
 // 设置行:29 px 高、31 px 间距,8 行(3 + 7*31 + 29 = 249 < 256)。
 // 从 6 行加到 8 行(多了「自动息屏」和「屏幕亮度」),行高只能从 38 收到 29;
 // 19 px 的字放进 29 px 的行里还剩 5 px 上下留白,触摸不到但看着不挤。
-#define SET_ROW_H 29
-#define SET_ROW_PITCH 31
-#define SET_ROW_Y0 3
-#define SET_ROW_TEXT_Y 5
+#define SET_ROW_H 26
+#define SET_ROW_PITCH 28
+#define SET_ROW_Y0 2
+#define SET_ROW_TEXT_Y 4
 
 // 热点行:44 px 高、46 px 间距,5 行(4 + 4*46 + 44 = 232 < 256)。
 #define AP_ROW_H 44
@@ -140,7 +204,27 @@ static app_fav_team_t s_fav_team;
 
 
 static lv_obj_t *s_scr;
+static lv_obj_t *s_header_obj;
 static lv_obj_t *s_body;
+
+static void update_header(void);
+static void update_footer(void);
+static void build_body(void);
+
+static void apply_theme(void) {
+    if (s_scr != NULL) {
+        lv_obj_set_style_bg_color(s_scr, lv_color_hex(C_BG), 0);
+    }
+    if (s_header_obj != NULL) {
+        lv_obj_set_style_bg_color(s_header_obj, lv_color_hex(C_HEADER), 0);
+    }
+    if (s_body != NULL) {
+        lv_obj_set_style_bg_color(s_body, lv_color_hex(C_BG), 0);
+    }
+    update_header();
+    update_footer();
+    build_body();
+}
 static lv_obj_t *s_battery;
 static lv_obj_t *s_wifi_bars[3];
 static lv_obj_t *s_footer;
@@ -353,6 +437,8 @@ static void update_footer(void) {
                 lv_label_set_text(s_footer, "加载中 · 上/下 或长按返回");
             } else if (!s_fav_snap.has_fav) {
                 lv_label_set_text(s_footer, "长按返回 · 积分榜设主队");
+            } else if (s_fav_list.count > 1) {
+                lv_label_set_text(s_footer, "上/下 换队 · OK 刷新 · 长按返回");
             } else {
                 lv_label_set_text(s_footer, "OK 刷新 · 长按返回 · 积分榜重设");
             }
@@ -547,7 +633,13 @@ static void build_standings(void) {
 
         // 排名 (主队显示 ★ 标记)
         char rank_str[12];
-        const bool is_fav = (s_fav_team.team_id > 0 && tm->team_id == s_fav_team.team_id);
+        bool is_fav = false;
+        for (uint8_t fi = 0; fi < s_fav_list.count; fi++) {
+            if (s_fav_list.teams[fi].team_id == tm->team_id) {
+                is_fav = true;
+                break;
+            }
+        }
         if (is_fav) {
             snprintf(rank_str, sizeof(rank_str), "%d*", tm->rank);
         } else {
@@ -582,7 +674,8 @@ static void build_favorite(void) {
     app_favorite_snapshot_copy(&s_fav_snap);
     s_fav_rev = app_favorite_revision();
 
-    if (!s_fav_snap.has_fav || s_fav_snap.team_id == 0) {
+    app_fav_team_t *active_fav = get_active_fav_team();
+    if (active_fav == NULL || active_fav->team_id == 0 || (!s_fav_snap.has_fav && !s_fav_snap.loading)) {
         clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "尚未关注球队", 0, 90, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
         clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "请在积分榜中选中球队按OK设为主队", 0, 125, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
@@ -1204,6 +1297,9 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
                 snprintf(value, cap, "OK 查看");
             }
             break;
+        case APP_SET_ROW_THEME:
+            snprintf(value, cap, "%s", app_config_theme_name(s_cfg.theme_idx));
+            break;
         case APP_SET_ROW_INTERVAL:
             snprintf(value, cap, "%u 秒", (unsigned)s_cfg.refresh_seconds);
             break;
@@ -1249,8 +1345,8 @@ static void settings_select(int sel) {
 
 static void build_settings(void) {
     static const char *const LABELS[APP_SET_ROW_COUNT] = {
-        "Wi-Fi 配网", "手机配网", "网络与状态", "刷新间隔",
-        "自动息屏", "屏幕亮度", "清除配网",
+        "Wi-Fi 配网", "手机配网", "网络与状态", "界面主题",
+        "刷新间隔", "自动息屏", "屏幕亮度", "清除配网",
     };
 
     for (int row = 0; row < APP_SET_ROW_COUNT; row++) {
@@ -1723,7 +1819,7 @@ static int visible_rows(void) {
         case APP_PAGE_HOME: return APP_MENU_ITEM_COUNT;
         case APP_PAGE_LEAGUES: return APP_LEAGUES_COUNT;
         case APP_PAGE_STANDINGS: return STANDINGS_VISIBLE_ROWS;
-        case APP_PAGE_FAVORITE: return 1;
+        case APP_PAGE_FAVORITE: return s_fav_list.count > 0 ? s_fav_list.count : 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_STATUS: return 1;
         case APP_PAGE_WIFI_LIST: return AP_ROWS;
@@ -1740,7 +1836,7 @@ static int current_item_count(void) {
         case APP_PAGE_HOME: return APP_MENU_ITEM_COUNT;
         case APP_PAGE_LEAGUES: return APP_LEAGUES_COUNT;
         case APP_PAGE_STANDINGS: return s_standings_snap.team_count;
-        case APP_PAGE_FAVORITE: return 1;
+        case APP_PAGE_FAVORITE: return s_fav_list.count > 0 ? s_fav_list.count : 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_STATUS: return 1;
         case APP_PAGE_WIFI_LIST: return (int)s_ap_count;
@@ -1771,9 +1867,16 @@ static void update_title(void) {
         case APP_PAGE_STANDINGS:
             value = s_curr_league_name;
             break;
-        case APP_PAGE_FAVORITE:
-            value = "关注球队";
+        case APP_PAGE_FAVORITE: {
+            static char fav_title[32];
+            if (s_fav_list.count > 1) {
+                snprintf(fav_title, sizeof(fav_title), "主队 (%d/%d)", s_fav_list.active_idx + 1, s_fav_list.count);
+                value = fav_title;
+            } else {
+                value = "关注球队";
+            }
             break;
+        }
         case APP_PAGE_DETAIL:
             app_fonts_sanitize(s_detail_match.league, league, sizeof(league));
             value = league[0] != '\0' ? league : "比赛详情";
@@ -1909,6 +2012,16 @@ static void handle_setting(int row) {
         case APP_SET_ROW_STATUS:
             app_nav_goto(&s_nav, APP_PAGE_STATUS);
             build_body();
+            return;
+        case APP_SET_ROW_THEME:
+            app_config_cycle_theme(&cfg);
+            s_curr_pal = &s_palettes[app_config_clamp_theme(cfg.theme_idx)];
+            app_settings_apply(&cfg, false);
+            s_cfg = cfg;
+            char theme_toast[32];
+            snprintf(theme_toast, sizeof(theme_toast), "主题: %s", app_config_theme_name(cfg.theme_idx));
+            toast(theme_toast);
+            apply_theme();
             return;
         case APP_SET_ROW_INTERVAL:
             app_config_cycle_refresh(&cfg);
@@ -2095,6 +2208,15 @@ void app_ui_handle_input(app_input_t input) {
                 settings_select((int)s_nav.sel);
                 break;
             }
+            if (s_nav.page == APP_PAGE_FAVORITE && s_fav_list.count > 1) {
+                if (s_fav_list.active_idx != s_nav.sel) {
+                    s_fav_list.active_idx = s_nav.sel;
+                    app_fav_team_t *fav = get_active_fav_team();
+                    if (fav != NULL && fav->team_id > 0) {
+                        app_favorite_fetch(fav->team_id, fav->team_name, fav->league_name);
+                    }
+                }
+            }
             build_body();
             break;
         case APP_ACT_SETTING:
@@ -2116,23 +2238,28 @@ void app_ui_handle_input(app_input_t input) {
             if (s_nav.page == APP_PAGE_STANDINGS &&
                 s_nav.sel >= 0 && s_nav.sel < s_standings_snap.team_count) {
                 const app_standing_team_t *tm = &s_standings_snap.teams[s_nav.sel];
-                s_fav_team.team_id = tm->team_id;
-                snprintf(s_fav_team.team_name, sizeof(s_fav_team.team_name), "%s", tm->team_name);
-                snprintf(s_fav_team.league_name, sizeof(s_fav_team.league_name), "%s", s_curr_league_name);
-                app_store_save_fav(&s_fav_team);
-                app_favorite_fetch(s_fav_team.team_id, s_fav_team.team_name, s_fav_team.league_name);
+                app_fav_team_t item;
+                item.team_id = tm->team_id;
+                snprintf(item.team_name, sizeof(item.team_name), "%s", tm->team_name);
+                snprintf(item.league_name, sizeof(item.league_name), "%s", s_curr_league_name);
 
-                char msg[48];
-                snprintf(msg, sizeof(msg), "已设主队: %s", tm->team_name);
+                app_fav_list_upsert(&s_fav_list, &item);
+                app_store_save_fav_list(&s_fav_list);
+                app_favorite_fetch(item.team_id, item.team_name, item.league_name);
+
+                char msg[64];
+                snprintf(msg, sizeof(msg), "已关注(%d/%d): %s", s_fav_list.active_idx + 1, s_fav_list.count, tm->team_name);
                 toast(msg);
                 build_body();
             }
             break;
         }
-        case APP_ACT_FAVORITE_OPEN:
-            if (s_fav_team.team_id > 0) {
-                app_favorite_fetch(s_fav_team.team_id, s_fav_team.team_name, s_fav_team.league_name);
+        case APP_ACT_FAVORITE_OPEN: {
+            app_fav_team_t *fav = get_active_fav_team();
+            if (fav != NULL && fav->team_id > 0) {
+                app_favorite_fetch(fav->team_id, fav->team_name, fav->league_name);
                 app_nav_goto(&s_nav, APP_PAGE_FAVORITE);
+                s_nav.sel = s_fav_list.active_idx;
                 build_body();
             } else {
                 toast("请在积分榜选定主队");
@@ -2140,6 +2267,7 @@ void app_ui_handle_input(app_input_t input) {
                 build_body();
             }
             break;
+        }
         case APP_ACT_REFRESH:
             if (s_nav.page == APP_PAGE_STANDINGS) {
                 app_standings_fetch(s_curr_season_id, s_curr_league_name);
@@ -2148,8 +2276,9 @@ void app_ui_handle_input(app_input_t input) {
                 break;
             }
             if (s_nav.page == APP_PAGE_FAVORITE) {
-                if (s_fav_team.team_id > 0) {
-                    app_favorite_fetch(s_fav_team.team_id, s_fav_team.team_name, s_fav_team.league_name);
+                app_fav_team_t *fav = get_active_fav_team();
+                if (fav != NULL && fav->team_id > 0) {
+                    app_favorite_fetch(fav->team_id, fav->team_name, fav->league_name);
                     toast("正在刷新主队战报…");
                 }
                 update_footer();
@@ -2232,11 +2361,10 @@ void app_ui_set_battery(int soc, int mv) {
 void app_ui_init(void) {
     app_standings_init();
     app_favorite_init();
-    if (app_store_load_fav(&s_fav_team) == ESP_OK && s_fav_team.team_id > 0) {
-        // 仅加载关注球队配置，拉取推迟到用户实际进入该页面或手动刷新时，避免开机并发抢堆
-    }
+    (void)app_store_load_fav_list(&s_fav_list);
     app_nav_init(&s_nav);
     app_settings_get(&s_cfg);
+    s_curr_pal = &s_palettes[app_config_clamp_theme(s_cfg.theme_idx)];
     app_net_snapshot_copy(&s_snap);
     app_net_scan_copy(&s_scan);
     s_seen_revision = s_snap.revision;
@@ -2251,6 +2379,7 @@ void app_ui_init(void) {
 
     // 页头:标题 + 阶梯 Wi-Fi 信号 + 电量
     lv_obj_t *header = panel(s_scr, 0, 0, SCR_W, HEADER_H, C_HEADER, 0);
+    s_header_obj = header;
     s_title = clipped_text(header, APP_FONT_BODY, C_TEXT, "比赛看板", 14, 10, 140, 22,
                            LV_TEXT_ALIGN_LEFT);
 
