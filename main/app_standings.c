@@ -214,6 +214,9 @@ static void standings_task(void *arg) {
 }
 
 void app_standings_fetch(uint32_t season_id, const char *title) {
+    if (s_snap.loading && s_req_season_id == season_id) {
+        return;
+    }
     s_req_season_id = season_id;
     snprintf(s_req_title, sizeof(s_req_title), "%s", title != NULL ? title : "");
     s_has_req = true;

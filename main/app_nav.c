@@ -119,7 +119,13 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
             }
         }
 
-        if (item_count == 0) return APP_ACT_NONE;
+        if (item_count == 0) {
+            if (nav->page == APP_PAGE_STANDINGS) {
+                app_nav_goto(nav, APP_PAGE_LEAGUES);
+                return APP_ACT_STANDINGS_BACK;
+            }
+            return APP_ACT_NONE;
+        }
         const int before = nav->sel;
         nav->sel += (input == APP_INPUT_UP) ? -1 : 1;
         if (nav->sel < 0) nav->sel = 0;

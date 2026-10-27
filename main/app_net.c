@@ -1281,8 +1281,14 @@ int app_net_fetch_alloc(const char *url, const char *referer,
     if (url == NULL || out_buf == NULL || cap == 0u) return -1;
     *out_buf = NULL;
     if (!s_sta_connected) return -2;
-    if (!ensure_time_synced()) return -3;
-    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+    const bool is_https = (strncmp(url, "https://", 8) == 0);
+    if (is_https && !ensure_time_synced()) return -3;
+    if (s_http_lock != NULL) {
+        if (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+            ESP_LOGW(TAG, "等待 HTTP 锁超时: %s", url);
+            return -6;
+        }
+    }
 
     char *buf = malloc(cap + 1);
     if (buf == NULL) {
@@ -1293,8 +1299,8 @@ int app_net_fetch_alloc(const char *url, const char *referer,
     int got = -1;
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
+        .crt_bundle_attach = is_https ? esp_crt_bundle_attach : NULL,
+        .timeout_ms = 8000,
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .user_agent = APP_FEED_UA,

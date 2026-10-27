@@ -302,8 +302,14 @@ static void update_footer(void) {
             break;
         case APP_PAGE_STANDINGS: {
             char f_str[64];
-            snprintf(f_str, sizeof(f_str), "%d/%d · OK 刷新 · 长按返回",
-                     s_nav.sel + 1, s_standings_snap.team_count > 0 ? s_standings_snap.team_count : 1);
+            if (s_standings_snap.loading) {
+                snprintf(f_str, sizeof(f_str), "获取中 · ▲/▼ 或长按返回");
+            } else if (s_standings_snap.error || s_standings_snap.team_count == 0) {
+                snprintf(f_str, sizeof(f_str), "OK 重试 · ▲/▼ 返回");
+            } else {
+                snprintf(f_str, sizeof(f_str), "%d/%d · OK 刷新 · 长按返回",
+                         s_nav.sel + 1, s_standings_snap.team_count);
+            }
             lv_label_set_text(s_footer, f_str);
             break;
         }
@@ -450,12 +456,13 @@ static void build_standings(void) {
     s_standings_rev = app_standings_revision();
 
     if (s_standings_snap.loading) {
-        clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "正在获取积分榜...", 0, 100, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "正在获取积分榜...", 0, 95, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "按 ▲/▼ 或长按 OK 返回", 0, 130, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
     }
     if (s_standings_snap.error || s_standings_snap.team_count == 0) {
-        clipped_text(s_body, APP_FONT_BODY, C_LIVE, "获取积分榜失败", 0, 90, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
-        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "请按 OK 键重试", 0, 125, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_BODY, C_LIVE, "获取积分榜失败", 0, 85, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "OK 重试 · 按 ▲/▼ 返回", 0, 120, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
     }
 
