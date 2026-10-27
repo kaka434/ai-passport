@@ -913,7 +913,7 @@ static bool scan_task_spawn(void) {
 // ---------------------------------------------------------------- 单场详情
 
 // 赛况接口。Referer 必须带,否则站点直接回 403。
-#define APP_DETAIL_URL "https://api.dongdianqiu.com/data/overview/match/"
+#define APP_DETAIL_URL "http://api.dongdianqiu.com/data/overview/match/"
 #define APP_DETAIL_REFERER "https://topic.dongdianqiu.com/"
 // 正文不落内存:解析器按需从连接里读(见 app_detail_parse_stream)。实测详情
 // 响应 6~37 KB,而运行时空闲堆只有 45 KB、还要留 20 KB 给 TLS,整段缓冲在
@@ -953,7 +953,7 @@ static void detail_publish(uint8_t state, const app_detail_t *detail, const char
 //
 // 代价是未开赛的详情页要多一次请求(TLS 握手 + 5.7 KB),但只在赛况响应里
 // 没有队徽时才发,而且静态内存一个字节都不占。
-#define APP_SAMPLE_URL "https://api.dongdianqiu.com/data/detail/match/"
+#define APP_SAMPLE_URL "http://api.dongdianqiu.com/data/detail/match/"
 // 只读这么多。matchSample 是响应里的第一个对象,两个 logo 都在 2 KB 以内;
 // 后面跟的 matchFormation(带双方首发名单)才是真正把响应撑大的部分,不需要。
 #define APP_SAMPLE_READ_MAX 4096
@@ -1024,10 +1024,11 @@ static void fetch_sample_logos(const char *match_id, char *home, char *away) {
         return;
     }
 
+    const bool is_https = (strncmp(url, "https://", 8) == 0);
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
+        .crt_bundle_attach = is_https ? esp_crt_bundle_attach : NULL,
+        .timeout_ms = 8000,
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .user_agent = APP_FEED_UA,
@@ -1110,10 +1111,11 @@ static bool detail_fetch(const char *match_id) {
     char logo_home[APP_CREST_URL_MAX] = "";
     char logo_away[APP_CREST_URL_MAX] = "";
 
+    const bool is_https = (strncmp(url, "https://", 8) == 0);
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
+        .crt_bundle_attach = is_https ? esp_crt_bundle_attach : NULL,
+        .timeout_ms = 8000,
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .user_agent = APP_FEED_UA,
@@ -1226,14 +1228,15 @@ int app_net_fetch_binary(const char *url, const char *referer,
                          uint8_t *buf, size_t cap) {
     if (url == NULL || buf == NULL || cap == 0u) return -1;
     if (!s_sta_connected) return -2;
-    if (!ensure_time_synced()) return -3;
+    const bool is_https = (strncmp(url, "https://", 8) == 0);
+    if (is_https && !ensure_time_synced()) return -3;
     if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
 
     int got = -1;
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
+        .crt_bundle_attach = is_https ? esp_crt_bundle_attach : NULL,
+        .timeout_ms = 8000,
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .user_agent = APP_FEED_UA,

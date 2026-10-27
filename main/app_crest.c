@@ -125,7 +125,12 @@ bool app_crest_pump(void) {
     if (slot < 0) return false;
 
     char full[APP_CREST_URL_LEN + 32];
-    snprintf(full, sizeof(full), "%s%s", url, APP_CREST_THUMB_SUFFIX);
+    // 七牛/懂球帝图片 CDN 均支持纯 HTTP，改用 HTTP 彻底免除 TLS 握手及 0x4290 证书验签内存耗尽错误
+    if (strncmp(url, "https://", 8) == 0) {
+        snprintf(full, sizeof(full), "http://%s%s", url + 8, APP_CREST_THUMB_SUFFIX);
+    } else {
+        snprintf(full, sizeof(full), "%s%s", url, APP_CREST_THUMB_SUFFIX);
+    }
 
     // 下载缓冲和解压缓冲都临时从堆上要,用完立刻还——这一条是硬要求。
     //

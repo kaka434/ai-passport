@@ -563,10 +563,18 @@ static void build_favorite(void) {
     lv_obj_t *c1 = panel(s_body, 6, 4, SCR_W - 12, 66, C_PANEL, 6);
     if (c1 != NULL) {
         char title_buf[64];
-        snprintf(title_buf, sizeof(title_buf), "%s · %s", s_fav_snap.team_name, s_fav_snap.league_name);
-        clipped_text(c1, APP_FONT_BODY, C_ACCENT, title_buf, 10, 6, 140, 20, LV_TEXT_ALIGN_LEFT);
+        if (s_fav_snap.league_name[0] != '\0') {
+            snprintf(title_buf, sizeof(title_buf), "%s · %s", s_fav_snap.team_name, s_fav_snap.league_name);
+        } else {
+            snprintf(title_buf, sizeof(title_buf), "%s", s_fav_snap.team_name);
+        }
+        char clean_title[64];
+        app_fonts_sanitize(title_buf, clean_title, sizeof(clean_title));
+        clipped_text(c1, APP_FONT_BODY, C_ACCENT, clean_title, 10, 6, 140, 20, LV_TEXT_ALIGN_LEFT);
 
-        clipped_text(c1, APP_FONT_BODY, C_AMBER, s_fav_snap.rank_desc[0] ? s_fav_snap.rank_desc : "参赛中",
+        char clean_rank[32];
+        app_fonts_sanitize(s_fav_snap.rank_desc[0] ? s_fav_snap.rank_desc : "参赛中", clean_rank, sizeof(clean_rank));
+        clipped_text(c1, APP_FONT_BODY, C_AMBER, clean_rank,
                      SCR_W - 12 - 80, 6, 70, 20, LV_TEXT_ALIGN_RIGHT);
 
         char rec[48] = "";
@@ -575,31 +583,40 @@ static void build_favorite(void) {
         } else if (s_fav_snap.venue[0]) {
             snprintf(rec, sizeof(rec), "主场: %s", s_fav_snap.venue);
         }
-        clipped_text(c1, APP_FONT_SMALL, C_TEXT, rec, 10, 26, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
+        char clean_rec[48];
+        app_fonts_sanitize(rec, clean_rec, sizeof(clean_rec));
+        clipped_text(c1, APP_FONT_SMALL, C_TEXT, clean_rec, 10, 26, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
 
         char form[48] = "";
         if (s_fav_snap.form_desc[0]) {
             snprintf(form, sizeof(form), "近5场: %s", s_fav_snap.form_desc);
         }
-        clipped_text(c1, APP_FONT_SMALL, C_MUTED, form, 10, 44, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
+        char clean_form[48];
+        app_fonts_sanitize(form, clean_form, sizeof(clean_form));
+        clipped_text(c1, APP_FONT_SMALL, C_MUTED, clean_form, 10, 44, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
     }
 
     // 卡片 2: 上一场比赛 (y=74, h=78)
     lv_obj_t *c2 = panel(s_body, 6, 74, SCR_W - 12, 78, C_PANEL, 6);
     if (c2 != NULL) {
         char sub_title[48];
-        snprintf(sub_title, sizeof(sub_title), "上一场 · %s",
-                 s_fav_snap.last_match.comp[0] ? s_fav_snap.last_match.comp : "完赛");
+        char comp_clean[32];
+        app_fonts_sanitize(s_fav_snap.last_match.comp[0] ? s_fav_snap.last_match.comp : "完赛", comp_clean, sizeof(comp_clean));
+        snprintf(sub_title, sizeof(sub_title), "上一场 · %s", comp_clean);
         clipped_text(c2, APP_FONT_SMALL, C_MUTED, sub_title, 10, 5, 120, 16, LV_TEXT_ALIGN_LEFT);
         clipped_text(c2, APP_FONT_SMALL, C_MUTED, s_fav_snap.last_match.date_str, SCR_W - 12 - 90, 5, 80, 16, LV_TEXT_ALIGN_RIGHT);
 
         if (s_fav_snap.last_match.team_A[0]) {
-            char vs_text[64];
+            char team_a[APP_NAME_LEN];
+            char team_b[APP_NAME_LEN];
+            app_fonts_sanitize(s_fav_snap.last_match.team_A, team_a, sizeof(team_a));
+            app_fonts_sanitize(s_fav_snap.last_match.team_B, team_b, sizeof(team_b));
+            char vs_text[96];
             snprintf(vs_text, sizeof(vs_text), "%s %d - %d %s",
-                     s_fav_snap.last_match.team_A,
+                     team_a,
                      s_fav_snap.last_match.score_A >= 0 ? s_fav_snap.last_match.score_A : 0,
                      s_fav_snap.last_match.score_B >= 0 ? s_fav_snap.last_match.score_B : 0,
-                     s_fav_snap.last_match.team_B);
+                     team_b);
             clipped_text(c2, APP_FONT_BODY, C_TEXT, vs_text, 10, 26, SCR_W - 32, 22, LV_TEXT_ALIGN_CENTER);
 
             const char *res_str = (s_fav_snap.last_match.result == 1) ? "主队 胜" :
@@ -616,15 +633,19 @@ static void build_favorite(void) {
     lv_obj_t *c3 = panel(s_body, 6, 156, SCR_W - 12, 78, C_PANEL, 6);
     if (c3 != NULL) {
         char sub_title[48];
-        snprintf(sub_title, sizeof(sub_title), "下一场 · %s",
-                 s_fav_snap.next_match.comp[0] ? s_fav_snap.next_match.comp : "赛前");
+        char comp_clean[32];
+        app_fonts_sanitize(s_fav_snap.next_match.comp[0] ? s_fav_snap.next_match.comp : "赛前", comp_clean, sizeof(comp_clean));
+        snprintf(sub_title, sizeof(sub_title), "下一场 · %s", comp_clean);
         clipped_text(c3, APP_FONT_SMALL, C_MUTED, sub_title, 10, 5, 120, 16, LV_TEXT_ALIGN_LEFT);
         clipped_text(c3, APP_FONT_SMALL, C_ACCENT, s_fav_snap.next_match.date_str, SCR_W - 12 - 90, 5, 80, 16, LV_TEXT_ALIGN_RIGHT);
 
         if (s_fav_snap.next_match.team_A[0]) {
-            char vs_text[64];
-            snprintf(vs_text, sizeof(vs_text), "%s vs %s",
-                     s_fav_snap.next_match.team_A, s_fav_snap.next_match.team_B);
+            char team_a[APP_NAME_LEN];
+            char team_b[APP_NAME_LEN];
+            app_fonts_sanitize(s_fav_snap.next_match.team_A, team_a, sizeof(team_a));
+            app_fonts_sanitize(s_fav_snap.next_match.team_B, team_b, sizeof(team_b));
+            char vs_text[96];
+            snprintf(vs_text, sizeof(vs_text), "%s vs %s", team_a, team_b);
             clipped_text(c3, APP_FONT_BODY, C_TEXT, vs_text, 10, 26, SCR_W - 32, 22, LV_TEXT_ALIGN_CENTER);
 
             const char *loc = s_fav_snap.next_match.is_home ? "主场出战" : "客场远征";
@@ -1583,7 +1604,7 @@ static void update_title(void) {
             value = s_curr_league_name;
             break;
         case APP_PAGE_FAVORITE:
-            value = (s_fav_team.team_id > 0 && s_fav_team.team_name[0]) ? s_fav_team.team_name : "关注球队";
+            value = "关注球队";
             break;
         case APP_PAGE_DETAIL:
             app_fonts_sanitize(s_detail_match.league, league, sizeof(league));
@@ -2054,7 +2075,7 @@ void app_ui_init(void) {
 
     // 页头:标题 + 联网状态点 + 电量
     lv_obj_t *header = panel(s_scr, 0, 0, SCR_W, HEADER_H, C_HEADER, 0);
-    s_title = clipped_text(header, APP_FONT_TITLE, C_TEXT, "比赛看板", 14, 9, 130, 26,
+    s_title = clipped_text(header, APP_FONT_BODY, C_TEXT, "比赛看板", 14, 10, 140, 22,
                            LV_TEXT_ALIGN_LEFT);
 
     s_wifi_dot = panel(header, 170, 16, 8, 8, C_MUTED, LV_RADIUS_CIRCLE);
