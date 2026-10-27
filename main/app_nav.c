@@ -68,6 +68,9 @@ static app_act_t long_press(app_nav_t *nav) {
         case APP_PAGE_STANDINGS:
             app_nav_goto(nav, APP_PAGE_LEAGUES);
             return APP_ACT_STANDINGS_BACK;
+        case APP_PAGE_FAVORITE:
+            app_nav_goto(nav, APP_PAGE_HOME);
+            return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_SETTINGS:
             app_nav_goto(nav, APP_PAGE_HOME);
             return APP_ACT_PAGE_CHANGED;
@@ -124,6 +127,10 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
                 app_nav_goto(nav, APP_PAGE_LEAGUES);
                 return APP_ACT_STANDINGS_BACK;
             }
+            if (nav->page == APP_PAGE_FAVORITE) {
+                app_nav_goto(nav, APP_PAGE_HOME);
+                return APP_ACT_PAGE_CHANGED;
+            }
             return APP_ACT_NONE;
         }
         const int before = nav->sel;
@@ -144,11 +151,13 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
                 app_nav_goto(nav, APP_PAGE_LEAGUES);
                 return APP_ACT_PAGE_CHANGED;
             }
-            return APP_ACT_SETTING; // APP_MENU_FAVORITE
+            return APP_ACT_FAVORITE_OPEN; // APP_MENU_FAVORITE
+        case APP_PAGE_FAVORITE:
+            return APP_ACT_REFRESH; // 主队看板单击 OK 刷新
         case APP_PAGE_LEAGUES:
             return APP_ACT_LEAGUE_PICK;
         case APP_PAGE_STANDINGS:
-            return APP_ACT_REFRESH; // 积分榜里单击 OK 为刷新
+            return APP_ACT_FAVORITE_PICK; // 积分榜里单击 OK 设为主队
         case APP_PAGE_SETTINGS:
             return APP_ACT_SETTING;
         case APP_PAGE_WIFI_LIST:

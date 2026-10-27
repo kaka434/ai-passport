@@ -17,6 +17,9 @@ static const char *TAG = "app_store";
 #define KEY_SCREEN_OFF "screen_off"
 #define KEY_BRIGHT "bright"
 #define KEY_KNOWN "known"
+#define KEY_FAV_ID "fav_id"
+#define KEY_FAV_NAME "fav_name"
+#define KEY_FAV_LEAGUE "fav_league"
 
 // "连过的网络"整份存成一个 blob:最多 5 条,一条 98 字节,总共不到 500 字节,
 // 拆成 5×2 个键反而更难维护。version 用来在结构变化时安全地丢弃旧数据。
@@ -166,4 +169,58 @@ esp_err_t app_store_remember(const char *ssid, const char *pass) {
     (void)app_store_load_known(&list);
     if (app_known_upsert(&list, ssid, pass) < 0) return ESP_ERR_INVALID_ARG;
     return app_store_save_known(&list);
+}
+
+// ---------------------------------------------------------------- 关注球队
+esp_err_t app_store_load_fav(app_fav_team_t *fav) {
+    if (fav == NULL) return ESP_ERR_INVALID_ARG;
+    memset(fav, 0, sizeof(*fav));
+
+    nvs_handle_t handle;
+    esp_err_t err = open_store(NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+
+    uint32_t tid = 0;
+    err = nvs_get_u32(handle, KEY_FAV_ID, &tid);
+    if (err == ESP_OK && tid > 0) {
+        fav->team_id = tid;
+        size_t len = sizeof(fav->team_name);
+        (void)nvs_get_str(handle, KEY_FAV_NAME, fav->team_name, &len);
+        len = sizeof(fav->league_name);
+        (void)nvs_get_str(handle, KEY_FAV_LEAGUE, fav->league_name, &len);
+    }
+    nvs_close(handle);
+    return (fav->team_id > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t app_store_save_fav(const app_fav_team_t *fav) {
+    if (fav == NULL || fav->team_id == 0) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t handle;
+    esp_err_t err = open_store(NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_u32(handle, KEY_FAV_ID, fav->team_id);
+    if (err == ESP_OK) err = nvs_set_str(handle, KEY_FAV_NAME, fav->team_name);
+    if (err == ESP_OK) err = nvs_set_str(handle, KEY_FAV_LEAGUE, fav->league_name);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "关注球队已保存: %s (id=%lu, %s)", fav->team_name, (unsigned long)fav->team_id, fav->league_name);
+    }
+    return err;
+}
+
+esp_err_t app_store_clear_fav(void) {
+    nvs_handle_t handle;
+    esp_err_t err = open_store(NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    (void)nvs_erase_key(handle, KEY_FAV_ID);
+    (void)nvs_erase_key(handle, KEY_FAV_NAME);
+    (void)nvs_erase_key(handle, KEY_FAV_LEAGUE);
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
 }

@@ -46,6 +46,7 @@ typedef enum {
     APP_PAGE_DETAIL,
     APP_PAGE_LEAGUES,        // 联赛选择列表
     APP_PAGE_STANDINGS,      // 积分榜表格
+    APP_PAGE_FAVORITE,       // 关注球队主队看板
     APP_PAGE_SETTINGS,
     APP_PAGE_WIFI_LIST,
     APP_PAGE_WIFI_PASS,
@@ -77,6 +78,9 @@ typedef enum {
     APP_ACT_DAY_NEXT,        // 比分页末项按下,切回后一日
     APP_ACT_LEAGUE_PICK,     // 选中联赛进入积分榜
     APP_ACT_STANDINGS_BACK,  // 积分榜返回联赛选择
+    APP_ACT_FAVORITE_OPEN,   // 主页点击关注球队
+    APP_ACT_FAVORITE_BACK,   // 主队看板返回主页
+    APP_ACT_FAVORITE_PICK,   // 积分榜设为主队
 } app_act_t;
 
 typedef struct {

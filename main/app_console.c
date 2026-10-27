@@ -3,6 +3,8 @@
 
 #include "app_net.h"
 #include "app_standings.h"
+#include "app_favorite.h"
+#include "app_store.h"
 #include "app_ui.h"
 
 #include "esp_console.h"
@@ -220,6 +222,38 @@ static int cmd_standings(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_fav(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "print") == 0) {
+        app_fav_snapshot_t snap;
+        app_favorite_snapshot_copy(&snap);
+        printf("=== 关注球队快照: has_fav=%d, id=%lu, %s (%s) ===\n",
+               snap.has_fav, (unsigned long)snap.team_id, snap.team_name, snap.league_name);
+        printf("概况: 排名=%s, 战绩=%s, 近5场=%s, 球场=%s, loading=%d, error=%d\n",
+               snap.rank_desc, snap.record_desc, snap.form_desc, snap.venue, snap.loading, snap.error);
+        printf("上一场: %s %d-%d %s (%s, %s, result=%d)\n",
+               snap.last_match.team_A, snap.last_match.score_A, snap.last_match.score_B, snap.last_match.team_B,
+               snap.last_match.comp, snap.last_match.date_str, snap.last_match.result);
+        printf("下一场: %s vs %s (%s, %s, is_home=%d)\n",
+               snap.next_match.team_A, snap.next_match.team_B,
+               snap.next_match.comp, snap.next_match.date_str, snap.next_match.is_home);
+        return 0;
+    }
+    if (argc >= 4 && strcmp(argv[1], "set") == 0) {
+        uint32_t tid = (uint32_t)strtoul(argv[2], NULL, 10);
+        const char *name = argv[3];
+        const char *league = argc >= 5 ? argv[4] : "英超";
+        app_fav_team_t fav = { .team_id = tid };
+        snprintf(fav.team_name, sizeof(fav.team_name), "%s", name);
+        snprintf(fav.league_name, sizeof(fav.league_name), "%s", league);
+        app_store_save_fav(&fav);
+        app_favorite_fetch(tid, name, league);
+        printf("已设置关注球队: %s (id=%lu, %s)\n", name, (unsigned long)tid, league);
+        return 0;
+    }
+    printf("用法: fav [print] 或 fav set <team_id> <team_name> [league]\n");
+    return 0;
+}
+
 static int cmd_key(int argc, char **argv) {
     if (argc < 2) {
         printf("用法: key <up | down | ok | back>\n");
@@ -280,11 +314,18 @@ void app_console_start(const app_console_hooks_t *hooks) {
         .hint = NULL,
         .func = cmd_key,
     };
+    const esp_console_cmd_t fav_cmd = {
+        .command = "fav",
+        .help = "主队: fav [print] | fav set <id> <name> [league]",
+        .hint = NULL,
+        .func = cmd_fav,
+    };
 
     ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
     ESP_ERROR_CHECK(esp_console_cmd_register(&board_cmd));
     ESP_ERROR_CHECK(esp_console_cmd_register(&standings_cmd));
     ESP_ERROR_CHECK(esp_console_cmd_register(&key_cmd));
+    ESP_ERROR_CHECK(esp_console_cmd_register(&fav_cmd));
     ESP_ERROR_CHECK(esp_console_register_help_command());
 
     err = esp_console_start_repl(repl);

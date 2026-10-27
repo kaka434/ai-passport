@@ -23,3 +23,14 @@ esp_err_t app_store_save_known(const app_known_list_t *list);
 
 // 记一条成功连上的网络(读-改-写)。ssid 非法时返回 ESP_ERR_INVALID_ARG。
 esp_err_t app_store_remember(const char *ssid, const char *pass);
+
+// ---------------------------------------------------------------- 关注球队
+typedef struct {
+    uint32_t team_id;
+    char team_name[32];
+    char league_name[16];
+} app_fav_team_t;
+
+esp_err_t app_store_load_fav(app_fav_team_t *fav);
+esp_err_t app_store_save_fav(const app_fav_team_t *fav);
+esp_err_t app_store_clear_fav(void);

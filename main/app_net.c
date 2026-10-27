@@ -1284,7 +1284,7 @@ int app_net_fetch_alloc(const char *url, const char *referer,
     const bool is_https = (strncmp(url, "https://", 8) == 0);
     if (is_https && !ensure_time_synced()) return -3;
     if (s_http_lock != NULL) {
-        if (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        if (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(30000)) != pdTRUE) {
             ESP_LOGW(TAG, "等待 HTTP 锁超时: %s", url);
             return -6;
         }
@@ -1345,6 +1345,17 @@ int app_net_fetch_alloc(const char *url, const char *referer,
         free(buf);
     }
     return got;
+}
+
+bool app_net_http_lock_take(uint32_t timeout_ms) {
+    if (s_http_lock == NULL) return false;
+    return (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+}
+
+void app_net_http_lock_give(void) {
+    if (s_http_lock != NULL) {
+        xSemaphoreGive(s_http_lock);
+    }
 }
 
 // ---------------------------------------------------------------- 工作任务

@@ -17,6 +17,7 @@ idf_component_register(
          "app_net.c"
          "app_portal.c"
          "app_standings.c"
+         "app_favorite.c"
          "app_console.c"
          "app_ui.c"
          "app_splash.c"

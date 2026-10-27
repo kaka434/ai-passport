@@ -123,6 +123,10 @@ int app_net_fetch_alloc(const char *url, const char *referer, char **out_buf, si
 int app_net_fetch_binary(const char *url, const char *referer,
                          uint8_t *buf, size_t cap);
 
+// HTTP 独占锁（防止并发网络请求压垮 ESP32-C3 堆栈）
+bool app_net_http_lock_take(uint32_t timeout_ms);
+void app_net_http_lock_give(void);
+
 // 叫醒详情任务。拉赛况和拉队徽都由它跑,所以这个函数对两者都有效:
 // 队徽模块靠它把自己排的活推下去(见 app_crest.c)。任务还没建成功时是空操作。
 void app_net_wake_detail(void);
