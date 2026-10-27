@@ -256,13 +256,14 @@ static int cmd_fav(int argc, char **argv) {
 
 static int cmd_key(int argc, char **argv) {
     if (argc < 2) {
-        printf("用法: key <up | down | ok | back>\n");
+        printf("用法: key <up | down | ok | back | dbl>\n");
         return 0;
     }
     if (strcmp(argv[1], "up") == 0) app_ui_handle_input(APP_INPUT_UP);
     else if (strcmp(argv[1], "down") == 0) app_ui_handle_input(APP_INPUT_DOWN);
     else if (strcmp(argv[1], "ok") == 0) app_ui_handle_input(APP_INPUT_OK);
     else if (strcmp(argv[1], "back") == 0) app_ui_handle_input(APP_INPUT_OK_LONG);
+    else if (strcmp(argv[1], "dbl") == 0) app_ui_handle_input(APP_INPUT_OK_DOUBLE);
     else {
         printf("未知按键: %s\n", argv[1]);
         return 1;

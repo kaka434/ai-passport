@@ -113,7 +113,7 @@ static int64_t s_day_cache_key;     // 拉的是哪一天的 CST 00:00(UTC 秒)
 // 要等拉回来才变。这里只在 publish() 里更新,用来判断"切回前日时缓存能不能
 // 直接复用"——数据已经被今天那份覆盖过,就不能,必须重拉。
 static int8_t s_published_view;
-static char *s_read_buf;
+static char s_read_buf[APP_READ_CHUNK];
 // 扫描结果缓冲。约 1.2 KB,同样放静态区,不占任务栈。
 static wifi_ap_record_t s_scan_records[APP_SCAN_MAX];
 
@@ -363,6 +363,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .user_agent = APP_FEED_UA,
+        .max_redirection_count = 3,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -556,14 +557,14 @@ static esp_err_t fetch_day(int64_t now_utc, int day) {
 // 用 append 模式:match_list 那份已经把直播和未开始都拿到了,这里只补完场。
 static esp_err_t fetch_today_extra(int64_t now_utc) {
     char url[192];
-    build_schedule_url(url, sizeof(url), now_utc, 0, "result");
+    build_schedule_url(url, sizeof(url), now_utc, 0, "schedule");
     return fetch_stream(url, &s_parsed, 0, now_utc, "今天凌晨段", true);
 }
 
-// 回看前一天:整份都是已完场,一份 result 就够(实测 200~450 KB)。
+// 回看前一天:整份都是已完场,一份 schedule 就够(实测 200~450 KB)。
 static esp_err_t fetch_prev_day(int64_t now_utc, int day) {
     char url[192];
-    build_schedule_url(url, sizeof(url), now_utc, day, "result");
+    build_schedule_url(url, sizeof(url), now_utc, day, "schedule");
     return fetch_stream(url, &s_parsed, day, now_utc, "前日赛程", false);
 }
 
@@ -1211,8 +1212,8 @@ static bool detail_task_spawn(void) {
     if (s_detail_task != NULL) return true;
     if (s_http_lock == NULL) return false;
 
-    // 8 KB:解析器的 1 KB 窗口在栈上,而且这条任务同时要跑 mbedtls 的解密。
-    if (xTaskCreate(detail_task, "app_detail", 8192, NULL, 3, &s_detail_task) != pdPASS) {
+    // 6 KB:解析器的 1 KB 窗口在栈上,而且这条任务同时要跑 mbedtls 的解密。
+    if (xTaskCreate(detail_task, "app_detail", 6144, NULL, 3, &s_detail_task) != pdPASS) {
         s_detail_task = NULL;
         ESP_LOGW(TAG, "详情任务创建失败,点开比赛将无法加载");
         return false;
@@ -1467,12 +1468,6 @@ void app_net_start(const app_config_t *cfg) {
         return;
     }
 
-    s_read_buf = malloc(APP_READ_CHUNK);
-    if (s_read_buf == NULL) {
-        ESP_LOGE(TAG, "读缓冲分配失败(%d 字节),联网不可用", APP_READ_CHUNK);
-        return;
-    }
-
     app_config_defaults(&s_config);
     if (cfg != NULL) s_config = *cfg;
     s_snapshot.state = app_config_has_credentials(&s_config) ? APP_NET_CONNECTING : APP_NET_OFF;
@@ -1481,14 +1476,11 @@ void app_net_start(const app_config_t *cfg) {
     // 解析用的暂存区在静态区,不占栈。
     if (xTaskCreate(net_task, "app_net", 8192, NULL, 4, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "联网任务创建失败");
-        free(s_read_buf);
-        s_read_buf = NULL;
         return;
     }
     // 扫描任务只在用户进配网页时被唤醒,优先级低于联网任务。
     (void)scan_task_spawn();
-    // 详情任务同理:第一次点开比赛时还会再试一次创建。
-    (void)detail_task_spawn();
+    // 详情任务推迟到用户首次进入单场详情时按需创建，节省开机 6KB 系统堆。
 
     // 还没配过网就先把热点扫出来放着:这种设备开机后第一件事就是配网,
     // 提前扫好能让"设置 → Wi-Fi 配网"一进去就有列表,不用干等 3~5 秒。

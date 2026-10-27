@@ -29,6 +29,7 @@ typedef struct {
     char record_desc[32];    // "7胜 0平 1负"
     char form_desc[24];      // "胜 胜 胜 平 胜"
     char venue[32];          // "酋长球场"
+    char team_logo[96];      // 队徽 URL
     app_fav_match_t last_match;
     app_fav_match_t next_match;
     bool loading;

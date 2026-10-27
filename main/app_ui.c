@@ -199,6 +199,7 @@ static uint32_t s_portal_revision;
 
 // 页面重建。详情页与配网流程都在它之前定义,先声明。
 static void build_body(void);
+static void draw_crest(lv_obj_t *parent, int slot, int x, int y);
 
 // ---------------------------------------------------------------- 小工具
 
@@ -280,24 +281,31 @@ static void update_header(void) {
 
     if (s_wifi_bars[0] != NULL) {
         if (!s_snap.wifi_connected) {
-            uint32_t c = C_MUTED;
-            if (s_snap.state == APP_NET_ERROR) {
-                c = C_LIVE;
-            } else if (s_snap.state == APP_NET_CONNECTING || s_snap.state == APP_NET_SYNCING
-                       || s_snap.state == APP_NET_FETCHING) {
-                c = C_AMBER;
-            }
-            for (int i = 0; i < 3; i++) {
-                if (s_wifi_bars[i] != NULL) {
-                    lv_obj_set_style_bg_color(s_wifi_bars[i], lv_color_hex(c), 0);
+            if (s_snap.state == APP_NET_CONNECTING || s_snap.state == APP_NET_SYNCING
+                || s_snap.state == APP_NET_FETCHING) {
+                // 连接/同步/拉取中: 3 格阶梯跑马灯动画
+                static int anim_step = 0;
+                anim_step = (anim_step + 1) % 4;
+                for (int i = 0; i < 3; i++) {
+                    if (s_wifi_bars[i] != NULL) {
+                        lv_obj_set_style_bg_color(s_wifi_bars[i],
+                            lv_color_hex(i <= anim_step ? C_AMBER : 0x334155), 0);
+                    }
+                }
+            } else {
+                uint32_t c = (s_snap.state == APP_NET_ERROR) ? C_LIVE : C_MUTED;
+                for (int i = 0; i < 3; i++) {
+                    if (s_wifi_bars[i] != NULL) {
+                        lv_obj_set_style_bg_color(s_wifi_bars[i], lv_color_hex(c), 0);
+                    }
                 }
             }
         } else {
             // 已连接: 根据 RSSI 显示阶梯强度
             int active_bars = 1;
-            if (s_snap.rssi >= -60) {
+            if (s_snap.rssi >= -65) {
                 active_bars = 3;
-            } else if (s_snap.rssi >= -75) {
+            } else if (s_snap.rssi >= -80) {
                 active_bars = 2;
             }
             uint32_t active_color = (s_snap.state == APP_NET_FETCHING) ? C_AMBER : C_ACCENT;
@@ -322,17 +330,17 @@ static void update_footer(void) {
 
     switch (s_nav.page) {
         case APP_PAGE_HOME:
-            lv_label_set_text(s_footer, "▲/▼ 切换 · OK 进入 · 长按设置");
+            lv_label_set_text(s_footer, "上/下 切换 · OK 进入 · 长按设置");
             break;
         case APP_PAGE_LEAGUES:
-            lv_label_set_text(s_footer, "▲/▼ 切换 · OK 查看 · 长按返回");
+            lv_label_set_text(s_footer, "上/下 切换 · OK 查看 · 长按返回");
             break;
         case APP_PAGE_STANDINGS: {
             char f_str[64];
             if (s_standings_snap.loading) {
-                snprintf(f_str, sizeof(f_str), "获取中 · ▲/▼ 或长按返回");
+                snprintf(f_str, sizeof(f_str), "获取中 · 上/下 或长按返回");
             } else if (s_standings_snap.error || s_standings_snap.team_count == 0) {
-                snprintf(f_str, sizeof(f_str), "OK 重试 · ▲/▼ 返回");
+                snprintf(f_str, sizeof(f_str), "OK 重试 · 上/下 返回");
             } else {
                 snprintf(f_str, sizeof(f_str), "%d/%d · OK 设主队 · 长按返回",
                          s_nav.sel + 1, s_standings_snap.team_count);
@@ -342,7 +350,7 @@ static void update_footer(void) {
         }
         case APP_PAGE_FAVORITE: {
             if (s_fav_snap.loading) {
-                lv_label_set_text(s_footer, "加载中 · ▲/▼ 或长按返回");
+                lv_label_set_text(s_footer, "加载中 · 上/下 或长按返回");
             } else if (!s_fav_snap.has_fav) {
                 lv_label_set_text(s_footer, "长按返回 · 积分榜设主队");
             } else {
@@ -354,7 +362,7 @@ static void update_footer(void) {
             lv_label_set_text(s_footer, "OK 执行 · 长按回比分");
             break;
         case APP_PAGE_STATUS:
-            lv_label_set_text(s_footer, "OK 返回 · 长按回比分");
+            lv_label_set_text(s_footer, "OK / 返回键 返回设置");
             break;
         case APP_PAGE_DETAIL: {
             // 左:第几子页;右:三个键各干什么。详情页的上下键是翻页,
@@ -378,10 +386,12 @@ static void update_footer(void) {
         default: {
             // 比分页:左边"第几场/共几场",右边最近一次刷新时间。
             // 缓冲区按 int 的最坏宽度留够,免得 snprintf 被 -Wformat-truncation 判为可能截断。
-            char position[40] = "";
+            char position[48] = "";
             if (s_snap.matches.count > 0) {
-                snprintf(position, sizeof(position), "%d/%d · OK 详情 · ", s_nav.sel + 1,
+                snprintf(position, sizeof(position), "%d/%d · OK 详情 · 双击刷新 · ", s_nav.sel + 1,
                          (int)s_snap.matches.count);
+            } else {
+                snprintf(position, sizeof(position), "双击 OK 刷新 · ");
             }
 
             char stamp[40] = "";
@@ -497,12 +507,12 @@ static void build_standings(void) {
 
     if (s_standings_snap.loading) {
         clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "正在获取积分榜...", 0, 95, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
-        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "按 ▲/▼ 或长按 OK 返回", 0, 130, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "按 上/下 或长按 OK 返回", 0, 130, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
     }
     if (s_standings_snap.error || s_standings_snap.team_count == 0) {
         clipped_text(s_body, APP_FONT_BODY, C_LIVE, "获取积分榜失败", 0, 85, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
-        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "OK 重试 · 按 ▲/▼ 返回", 0, 120, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "OK 重试 · 按 上/下 返回", 0, 120, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
     }
 
@@ -580,7 +590,7 @@ static void build_favorite(void) {
 
     if (s_fav_snap.loading) {
         clipped_text(s_body, APP_FONT_BODY, C_ACCENT, "正在获取主队战报...", 0, 95, SCR_W, 30, LV_TEXT_ALIGN_CENTER);
-        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "按 ▲/▼ 或长按 OK 返回", 0, 130, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
+        clipped_text(s_body, APP_FONT_SMALL, C_MUTED, "按 上/下 或长按 OK 返回", 0, 130, SCR_W, 20, LV_TEXT_ALIGN_CENTER);
         return;
     }
 
@@ -602,6 +612,12 @@ static void build_favorite(void) {
         clipped_text(c1, APP_FONT_BODY, C_AMBER, clean_rank,
                      SCR_W - 12 - 80, 6, 70, 20, LV_TEXT_ALIGN_RIGHT);
 
+        // 排名下方显示球队队徽 (32x32, 比例适中)
+        if (s_fav_snap.team_logo[0] != '\0' && app_crest_image(APP_CREST_SLOT_FAV) == NULL) {
+            app_crest_request(APP_CREST_SLOT_FAV, s_fav_snap.team_logo);
+        }
+        draw_crest(c1, APP_CREST_SLOT_FAV, SCR_W - 12 - 50, 28);
+
         char rec[48] = "";
         if (s_fav_snap.record_desc[0]) {
             snprintf(rec, sizeof(rec), "战绩: %s", s_fav_snap.record_desc);
@@ -610,7 +626,7 @@ static void build_favorite(void) {
         }
         char clean_rec[48];
         app_fonts_sanitize(rec, clean_rec, sizeof(clean_rec));
-        clipped_text(c1, APP_FONT_SMALL, C_TEXT, clean_rec, 10, 26, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c1, APP_FONT_SMALL, C_TEXT, clean_rec, 10, 26, 155, 16, LV_TEXT_ALIGN_LEFT);
 
         char form[48] = "";
         if (s_fav_snap.form_desc[0]) {
@@ -618,7 +634,7 @@ static void build_favorite(void) {
         }
         char clean_form[48];
         app_fonts_sanitize(form, clean_form, sizeof(clean_form));
-        clipped_text(c1, APP_FONT_SMALL, C_MUTED, clean_form, 10, 44, SCR_W - 32, 16, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c1, APP_FONT_SMALL, C_MUTED, clean_form, 10, 44, 155, 16, LV_TEXT_ALIGN_LEFT);
     }
 
     // 卡片 2: 上一场比赛 (y=74, h=78)
@@ -1182,7 +1198,11 @@ static void settings_row_text(app_set_row_t row, char *value, size_t cap) {
             snprintf(value, cap, "手机网页");
             break;
         case APP_SET_ROW_STATUS:
-            snprintf(value, cap, "OK 查看");
+            if (s_snap.wifi_connected && s_snap.ip[0] != '\0') {
+                snprintf(value, cap, "%s", s_snap.ip);
+            } else {
+                snprintf(value, cap, "OK 查看");
+            }
             break;
         case APP_SET_ROW_INTERVAL:
             snprintf(value, cap, "%u 秒", (unsigned)s_cfg.refresh_seconds);
@@ -1229,7 +1249,7 @@ static void settings_select(int sel) {
 
 static void build_settings(void) {
     static const char *const LABELS[APP_SET_ROW_COUNT] = {
-        "Wi-Fi 配网", "手机配网", "系统状态", "刷新间隔",
+        "Wi-Fi 配网", "手机配网", "网络与状态", "刷新间隔",
         "自动息屏", "屏幕亮度", "清除配网",
     };
 
@@ -1322,11 +1342,11 @@ static void build_status(void) {
         if (s_snap.updated_at > 0) {
             char clock[12];
             app_format_clock(s_snap.updated_at, clock, sizeof(clock));
-            snprintf(line2, sizeof(line2), "sd.dongdianqiu.com 更新于 %s", clock);
+            snprintf(line2, sizeof(line2), "dongqiudi.com 更新于 %s", clock);
         } else if (s_snap.error[0]) {
             snprintf(line2, sizeof(line2), "错误: %s", s_snap.error);
         } else {
-            snprintf(line2, sizeof(line2), "sd.dongdianqiu.com (HTTP)");
+            snprintf(line2, sizeof(line2), "dongqiudi.com (HTTPS)");
         }
         app_fonts_sanitize(line2, s_clean, sizeof(s_clean));
         clipped_text(c2, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
@@ -1977,7 +1997,9 @@ static void on_tick(lv_timer_t *timer) {
     }
     if (s_nav.page == APP_PAGE_FAVORITE) {
         const uint32_t fav_rev = app_favorite_revision();
-        if (fav_rev != s_fav_rev) {
+        const uint32_t crest_rev = app_crest_revision();
+        if (fav_rev != s_fav_rev || crest_rev != s_crest_revision) {
+            s_crest_revision = crest_rev;
             build_body();
         }
     }
@@ -2211,7 +2233,7 @@ void app_ui_init(void) {
     app_standings_init();
     app_favorite_init();
     if (app_store_load_fav(&s_fav_team) == ESP_OK && s_fav_team.team_id > 0) {
-        app_favorite_fetch(s_fav_team.team_id, s_fav_team.team_name, s_fav_team.league_name);
+        // 仅加载关注球队配置，拉取推迟到用户实际进入该页面或手动刷新时，避免开机并发抢堆
     }
     app_nav_init(&s_nav);
     app_settings_get(&s_cfg);
@@ -2232,10 +2254,10 @@ void app_ui_init(void) {
     s_title = clipped_text(header, APP_FONT_BODY, C_TEXT, "比赛看板", 14, 10, 140, 22,
                            LV_TEXT_ALIGN_LEFT);
 
-    // 阶梯式 Wi-Fi 图标: 3 根竖柱, 从左到右高度 5, 9, 13, 底部在 y=25 对齐
-    s_wifi_bars[0] = panel(header, 166, 20, 3, 5, C_MUTED, 1);
-    s_wifi_bars[1] = panel(header, 171, 16, 3, 9, C_MUTED, 1);
-    s_wifi_bars[2] = panel(header, 176, 12, 3, 13, C_MUTED, 1);
+    // 阶梯式 Wi-Fi 状态图标: 3 根清晰竖柱, 宽度 4px, 底部在 y=28 对齐
+    s_wifi_bars[0] = panel(header, 162, 22, 4, 6, C_MUTED, 1);
+    s_wifi_bars[1] = panel(header, 168, 17, 4, 11, C_MUTED, 1);
+    s_wifi_bars[2] = panel(header, 174, 12, 4, 16, C_MUTED, 1);
 
     s_battery = clipped_text(header, APP_FONT_BODY, C_MUTED, "--%", 184, 10, 44, 22,
                              LV_TEXT_ALIGN_RIGHT);

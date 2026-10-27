@@ -1,4 +1,5 @@
 #include "app_favorite.h"
+#include "app_crest.h"
 #include "app_net.h"
 #include "app_fonts.h"
 #include "esp_log.h"
@@ -85,6 +86,10 @@ static void parse_team_sample(const char *buf) {
 
     extract_json_str(buf, "team_en_name", s_snap.team_en_name, sizeof(s_snap.team_en_name));
     extract_json_str(buf, "venue_name", s_snap.venue, sizeof(s_snap.venue));
+    extract_json_str(buf, "team_logo", s_snap.team_logo, sizeof(s_snap.team_logo));
+    if (s_snap.team_logo[0] != '\0') {
+        app_crest_request(APP_CREST_SLOT_FAV, s_snap.team_logo);
+    }
 
     // 解析排名与描述
     const char *p_desc = strstr(buf, "\"description\":");

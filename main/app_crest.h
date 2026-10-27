@@ -15,7 +15,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define APP_CREST_SLOTS 2
+#define APP_CREST_SLOTS 3
+#define APP_CREST_SLOT_HOME 0
+#define APP_CREST_SLOT_AWAY 1
+#define APP_CREST_SLOT_FAV  2
 
 // 队徽背后的面板色,和 app_ui.c 的 C_PANEL(0x11291D)同值,换算成 RGB565。
 //

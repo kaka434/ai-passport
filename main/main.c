@@ -309,9 +309,8 @@ void app_main(void) {
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
     if (s_input_queue == NULL) {
         ESP_LOGE(TAG, "按键队列创建失败");
-    // 8 KB:按键任务会重建页面(LVGL 对象)、读/写 NVS 里的配网历史,
-    // 还要在栈上放一份 known_blob(约 500 字节),4~6 KB 偏紧。
-    } else if (xTaskCreate(input_task, "app_input", 8192, NULL, 5, NULL) != pdPASS) {
+    // 5 KB 充裕，省下 3KB 堆给 TLS
+    } else if (xTaskCreate(input_task, "app_input", 5120, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "按键任务创建失败");
         vQueueDelete(s_input_queue);
         s_input_queue = NULL;
