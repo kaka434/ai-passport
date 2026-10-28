@@ -75,7 +75,7 @@ static app_act_t long_press(app_nav_t *nav) {
             app_nav_goto(nav, APP_PAGE_HOME);
             return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_STATUS:
-            app_nav_goto(nav, APP_PAGE_POWER_DETAIL);
+            app_nav_goto(nav, APP_PAGE_SETTINGS);
             return APP_ACT_PAGE_CHANGED;
         case APP_PAGE_POWER_DETAIL:
             app_nav_goto(nav, APP_PAGE_STATUS);
@@ -111,11 +111,7 @@ app_act_t app_nav_handle(app_nav_t *nav, app_input_t input, int item_count, int 
     // 密码页的方向键与确定键由界面交给键盘模型,这里只挡掉它们。
     if (nav->page == APP_PAGE_WIFI_PASS) return APP_ACT_NONE;
 
-    // 系统状态页单屏展示: 按任意方向键退出回设置页
-    if (nav->page == APP_PAGE_STATUS && (input == APP_INPUT_UP || input == APP_INPUT_DOWN)) {
-        app_nav_goto(nav, APP_PAGE_SETTINGS);
-        return APP_ACT_PAGE_CHANGED;
-    }
+// 系统状态页单屏展示: 长按 OK 返回设置, 单击 OK 进详情
     // 电池能耗详情页: 按任意方向键退出回状态页
     if (nav->page == APP_PAGE_POWER_DETAIL && (input == APP_INPUT_UP || input == APP_INPUT_DOWN)) {
         app_nav_goto(nav, APP_PAGE_STATUS);
