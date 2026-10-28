@@ -14,6 +14,7 @@ idf_component_register(
          "app_keyboard.c"
          "app_known.c"
          "app_store.c"
+         "app_power.c"
          "app_net.c"
          "app_portal.c"
          "app_standings.c"

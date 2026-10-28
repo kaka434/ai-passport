@@ -20,6 +20,7 @@
 // 视觉语言:深绿球场底 + 记分牌式比分,与基线 demo 的像素卡片菜单没有
 // 任何共用结构(不复用 ui_pixel_*)。
 #include "app_ui.h"
+#include "app_power.h"
 
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -450,7 +451,10 @@ static void update_footer(void) {
             lv_label_set_text(s_footer, "OK 执行 · 长按回比分");
             break;
         case APP_PAGE_STATUS:
-            lv_label_set_text(s_footer, "OK / 返回键 返回设置");
+            lv_label_set_text(s_footer, "OK 详情曲线 · 长按回设置");
+            break;
+        case APP_PAGE_POWER_DETAIL:
+            lv_label_set_text(s_footer, "任意键返回系统状态");
             break;
         case APP_PAGE_DETAIL: {
             // 左:第几子页;右:三个键各干什么。详情页的上下键是翻页,
@@ -1457,25 +1461,25 @@ static void build_status(void) {
 
         char soc_str[32];
         if (s_battery_soc < 0) {
-            snprintf(soc_str, sizeof(soc_str), "--%%");
+            snprintf(soc_str, sizeof(soc_str), "--%% >");
         } else if (s_battery_mv > 0) {
-            snprintf(soc_str, sizeof(soc_str), "%d%% (%dmV)", s_battery_soc, s_battery_mv);
+            snprintf(soc_str, sizeof(soc_str), "%d%% (%dmV) >", s_battery_soc, s_battery_mv);
         } else {
-            snprintf(soc_str, sizeof(soc_str), "%d%%", s_battery_soc);
+            snprintf(soc_str, sizeof(soc_str), "%d%% >", s_battery_soc);
         }
         clipped_text(c3, APP_FONT_SMALL,
                      (s_battery_soc > 20 || s_battery_soc < 0) ? C_ACCENT : C_LIVE,
-                     soc_str, 100, 6, 106, 16, LV_TEXT_ALIGN_RIGHT);
+                     soc_str, 90, 6, 116, 16, LV_TEXT_ALIGN_RIGHT);
 
         char line3[96];
         if (s_drain_rate > 0.05f && s_est_hours > 0) {
-            snprintf(line3, sizeof(line3), "掉电: -%.1f%%/h (续航约%dh)", s_drain_rate, s_est_hours);
+            snprintf(line3, sizeof(line3), "掉电: -%.1f%%/h (~%dh) · OK详情", s_drain_rate, s_est_hours);
         } else if (s_drain_rate < -0.05f) {
-            snprintf(line3, sizeof(line3), "正在充电中 (USB供电)");
+            snprintf(line3, sizeof(line3), "充电中(USB供电) · OK详情");
         } else if (s_battery_mv > 0) {
-            snprintf(line3, sizeof(line3), "电压: %dmV · 功耗测算中…", s_battery_mv);
+            snprintf(line3, sizeof(line3), "电压%dmV · 测算中 · OK详情", s_battery_mv);
         } else {
-            snprintf(line3, sizeof(line3), "电量计:CW2017 (USB检测中)");
+            snprintf(line3, sizeof(line3), "CW2017在线 · OK详情");
         }
         app_fonts_sanitize(line3, s_clean, sizeof(s_clean));
         clipped_text(c3, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
@@ -1501,6 +1505,177 @@ static void build_status(void) {
                  up_h, up_m, up_s, app_net_get_power_strategy());
         app_fonts_sanitize(line4, s_clean, sizeof(s_clean));
         clipped_text(c4, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
+    }
+}
+
+// ---------------------------------------------------------------- 页面:电池与能耗详情 (三级页)
+
+static void build_power_detail(void) {
+    char s_clean[96];
+
+    // 1. 顶部指标概览卡片 (h = 48)
+    lv_obj_t *c1 = panel(s_body, 10, 4, SCR_W - 20, 48, C_PANEL, 8);
+    if (c1 != NULL) {
+        char soc_buf[32];
+        if (s_battery_soc < 0) {
+            snprintf(soc_buf, sizeof(soc_buf), "--%%");
+        } else {
+            snprintf(soc_buf, sizeof(soc_buf), "%d%%", s_battery_soc);
+        }
+        clipped_text(c1, APP_FONT_TITLE, (s_battery_soc > 20 || s_battery_soc < 0) ? C_ACCENT : C_LIVE,
+                     soc_buf, 10, 3, 60, 22, LV_TEXT_ALIGN_LEFT);
+
+        const char *state_tag = "放电中";
+        uint32_t tag_color = C_MUTED;
+        if (s_drain_rate < -0.05f) {
+            state_tag = "充电中";
+            tag_color = C_LIVE;
+        } else if (s_battery_soc >= 98) {
+            state_tag = "已充满";
+            tag_color = C_ACCENT;
+        }
+        clipped_text(c1, APP_FONT_SMALL, tag_color, state_tag, 68, 7, 48, 16, LV_TEXT_ALIGN_LEFT);
+
+        if (s_battery_mv > 0) {
+            char mv_buf[32];
+            snprintf(mv_buf, sizeof(mv_buf), "%d mV", s_battery_mv);
+            clipped_text(c1, APP_FONT_SMALL, C_MUTED, mv_buf, 120, 7, 86, 16, LV_TEXT_ALIGN_RIGHT);
+        }
+
+        char line1[96];
+        if (s_drain_rate > 0.05f && s_est_hours > 0) {
+            snprintf(line1, sizeof(line1), "掉电: -%.1f%%/h · 预估待机约 %dh", s_drain_rate, s_est_hours);
+        } else if (s_drain_rate < -0.05f) {
+            snprintf(line1, sizeof(line1), "USB供电中 · CW2017电量计在线");
+        } else if (s_battery_mv > 0) {
+            snprintf(line1, sizeof(line1), "电池状态正常 · 功耗测算中…");
+        } else {
+            snprintf(line1, sizeof(line1), "电量计初始化中…");
+        }
+        app_fonts_sanitize(line1, s_clean, sizeof(s_clean));
+        clipped_text(c1, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
+    }
+
+    // 2. 中间卡片: 12 小时 SOC 曲线折线图 (h = 88)
+    lv_obj_t *c2 = panel(s_body, 10, 56, SCR_W - 20, 88, C_PANEL, 8);
+    if (c2 != NULL) {
+        clipped_text(c2, APP_FONT_SMALL, C_TEXT, "12小时电量趋势", 10, 4, 100, 16, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c2, APP_FONT_SMALL, C_MUTED, "-12h    -6h   现在", 110, 4, 96, 16, LV_TEXT_ALIGN_RIGHT);
+
+        clipped_text(c2, APP_FONT_SMALL, C_MUTED, "100", 6, 20, 22, 14, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c2, APP_FONT_SMALL, C_MUTED, "50", 6, 42, 22, 14, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c2, APP_FONT_SMALL, C_MUTED, "0", 6, 64, 22, 14, LV_TEXT_ALIGN_LEFT);
+
+        static lv_point_precise_t ref100[2] = { {28, 26}, {210, 26} };
+        static lv_point_precise_t ref50[2]  = { {28, 48}, {210, 48} };
+        static lv_point_precise_t ref0[2]   = { {28, 70}, {210, 70} };
+
+        lv_obj_t *l100 = lv_line_create(c2);
+        if (l100) {
+            lv_line_set_points(l100, ref100, 2);
+            lv_obj_set_style_line_width(l100, 1, 0);
+            lv_obj_set_style_line_color(l100, lv_color_hex(0x2A2E39), 0);
+        }
+        lv_obj_t *l50 = lv_line_create(c2);
+        if (l50) {
+            lv_line_set_points(l50, ref50, 2);
+            lv_obj_set_style_line_width(l50, 1, 0);
+            lv_obj_set_style_line_color(l50, lv_color_hex(0x222630), 0);
+        }
+        lv_obj_t *l0 = lv_line_create(c2);
+        if (l0) {
+            lv_line_set_points(l0, ref0, 2);
+            lv_obj_set_style_line_width(l0, 1, 0);
+            lv_obj_set_style_line_color(l0, lv_color_hex(0x2A2E39), 0);
+        }
+
+        static app_power_point_t s_pts[APP_POWER_CURVE_POINTS];
+        static lv_point_precise_t s_line_coords[APP_POWER_CURVE_POINTS + 1];
+        int count = 0;
+        app_power_get_curve(s_pts, &count);
+
+        const int x_start = 30;
+        const int x_end = 208;
+        const int w_span = x_end - x_start;
+        const int y_top = 26;
+        const int y_bottom = 70;
+        const int h_span = y_bottom - y_top;
+
+        if (count <= 0) {
+            clipped_text(c2, APP_FONT_SMALL, C_MUTED, "正在记录电池采样…", 50, 42, 120, 16, LV_TEXT_ALIGN_CENTER);
+        } else if (count == 1) {
+            int y_val = y_bottom - (s_pts[0].soc * h_span) / 100;
+            if (y_val < y_top) y_val = y_top;
+            if (y_val > y_bottom) y_val = y_bottom;
+            s_line_coords[0].x = x_start;
+            s_line_coords[0].y = y_val;
+            s_line_coords[1].x = x_end;
+            s_line_coords[1].y = y_val;
+
+            lv_obj_t *curve_line = lv_line_create(c2);
+            if (curve_line) {
+                lv_line_set_points(curve_line, s_line_coords, 2);
+                lv_obj_set_style_line_width(curve_line, 2, 0);
+                lv_obj_set_style_line_color(curve_line, lv_color_hex(C_ACCENT), 0);
+            }
+            panel(c2, x_end - 2, y_val - 2, 5, 5, C_ACCENT, 2);
+        } else {
+            for (int i = 0; i < count; i++) {
+                int x_pos = x_start + (i * w_span) / (APP_POWER_CURVE_POINTS - 1);
+                if (count < APP_POWER_CURVE_POINTS / 2) {
+                    x_pos = x_start + (i * w_span) / (count - 1);
+                }
+                int y_pos = y_bottom - (s_pts[i].soc * h_span) / 100;
+                if (y_pos < y_top) y_pos = y_top;
+                if (y_pos > y_bottom) y_pos = y_bottom;
+                s_line_coords[i].x = x_pos;
+                s_line_coords[i].y = y_pos;
+            }
+
+            lv_obj_t *curve_line = lv_line_create(c2);
+            if (curve_line) {
+                lv_line_set_points(curve_line, s_line_coords, count);
+                lv_obj_set_style_line_width(curve_line, 2, 0);
+                lv_obj_set_style_line_color(curve_line, lv_color_hex(C_ACCENT), 0);
+                lv_obj_set_style_line_rounded(curve_line, true, 0);
+            }
+
+            int last_idx = count - 1;
+            uint32_t dot_color = s_pts[last_idx].is_charging ? 0x10B981 : C_ACCENT;
+            panel(c2, s_line_coords[last_idx].x - 3, s_line_coords[last_idx].y - 3, 6, 6, dot_color, 3);
+        }
+    }
+
+    // 3. 底部卡片: 能耗组件排行 (h = 104)
+    lv_obj_t *c3 = panel(s_body, 10, 148, SCR_W - 20, 104, C_PANEL, 8);
+    if (c3 != NULL) {
+        clipped_text(c3, APP_FONT_SMALL, C_TEXT, "能耗组件排行", 10, 4, 100, 16, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c3, APP_FONT_SMALL, C_MUTED, "加权占比", 120, 4, 86, 16, LV_TEXT_ALIGN_RIGHT);
+
+        app_power_breakdown_t bd;
+        app_power_get_breakdown(&bd);
+
+        const int bar_max_w = 84;
+        for (int i = 0; i < bd.count && i < 4; i++) {
+            const int y_row = 24 + i * 19;
+            clipped_text(c3, APP_FONT_SMALL, C_TEXT, bd.items[i].name, 10, y_row, 62, 16, LV_TEXT_ALIGN_LEFT);
+
+            // 底槽
+            panel(c3, 76, y_row + 5, bar_max_w, 6, 0x1E222B, 3);
+
+            // 进度条
+            int fill_w = (bd.items[i].percent * bar_max_w) / 100;
+            if (bd.items[i].percent > 0 && fill_w < 3) fill_w = 3;
+            if (fill_w > bar_max_w) fill_w = bar_max_w;
+            if (fill_w > 0) {
+                panel(c3, 76, y_row + 5, fill_w, 6, bd.items[i].color_hex, 3);
+            }
+
+            // 数值
+            char pct_str[16];
+            snprintf(pct_str, sizeof(pct_str), "%d%%", bd.items[i].percent);
+            clipped_text(c3, APP_FONT_SMALL, bd.items[i].color_hex, pct_str, 166, y_row, 42, 16, LV_TEXT_ALIGN_RIGHT);
+        }
     }
 }
 
@@ -1830,6 +2005,7 @@ static int visible_rows(void) {
         case APP_PAGE_FAVORITE: return s_fav_list.count > 0 ? s_fav_list.count : 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_STATUS: return 1;
+        case APP_PAGE_POWER_DETAIL: return 1;
         case APP_PAGE_WIFI_LIST: return AP_ROWS;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
         case APP_PAGE_DETAIL: return 1;   // 上下键是翻子页,不移动选中项
@@ -1847,6 +2023,7 @@ static int current_item_count(void) {
         case APP_PAGE_FAVORITE: return s_fav_list.count > 0 ? s_fav_list.count : 1;
         case APP_PAGE_SETTINGS: return APP_SET_ROW_COUNT;
         case APP_PAGE_STATUS: return 1;
+        case APP_PAGE_POWER_DETAIL: return 1;
         case APP_PAGE_WIFI_LIST: return (int)s_ap_count;
         case APP_PAGE_WIFI_PASS: return APP_KB_KEYS;
         case APP_PAGE_DETAIL: return 1;
@@ -1894,6 +2071,9 @@ static void update_title(void) {
             break;
         case APP_PAGE_STATUS:
             value = "系统状态";
+            break;
+        case APP_PAGE_POWER_DETAIL:
+            value = "电池与能耗";
             break;
         case APP_PAGE_WIFI_LIST:
             value = "选择网络";
@@ -1967,6 +2147,9 @@ static void build_body(void) {
             break;
         case APP_PAGE_STATUS:
             build_status();
+            break;
+        case APP_PAGE_POWER_DETAIL:
+            build_power_detail();
             break;
         case APP_PAGE_DETAIL:
             build_detail();

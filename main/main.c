@@ -10,6 +10,7 @@
 #include "app_splash.h"
 #include "app_store.h"
 #include "app_ui.h"
+#include "app_power.h"
 
 #include "bsp_battery.h"
 #include "bsp_button.h"
@@ -56,6 +57,7 @@ static void screen_wake(void) {
     if (!s_screen_off) return;
     s_screen_off = false;
     bsp_display_backlight(s_brightness);
+    app_power_track_screen(true);
     app_net_set_screen_state(false);
     ESP_LOGI(TAG, "按键点亮屏幕,已恢复网络轮询并请求立即刷新");
 }
@@ -77,6 +79,7 @@ static void idle_task(void *arg) {
 
         s_screen_off = true;
         bsp_display_backlight(0);
+        app_power_track_screen(false);
         app_net_set_screen_state(true);
         ESP_LOGI(TAG, "无操作 %u 秒,息屏(已挂起网络轮询)", (unsigned)off_seconds);
     }
@@ -282,6 +285,7 @@ static void battery_task(void *arg) {
                 }
             }
             app_ui_set_power_stats(s_drain_rate, s_est_hours);
+            app_power_record_battery(soc, mv, s_drain_rate < -0.05f);
 
             // 每 5 分钟 (10 次轮询) 输出一次能耗监控日志
             if (++log_counter >= 10) {
@@ -361,6 +365,8 @@ void app_main(void) {
     if (!(wake_causes & (1u << ESP_SLEEP_WAKEUP_GPIO))) {
         app_splash_show();
     }
+
+    app_power_init();
 
     if (bsp_lvgl_lock(1000)) {
         app_ui_init();

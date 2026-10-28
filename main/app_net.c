@@ -1,5 +1,6 @@
 // main/app_net.c
 #include "app_net.h"
+#include "app_power.h"
 
 #include "app_crest.h"
 #include "app_json.h"
@@ -136,6 +137,27 @@ static app_net_connected_cb_t s_connected_hook;
 // 单场详情:一把 HTTP 锁 + 一份快照。锁的作用是让"列表刷新"和"详情拉取"
 // 排队握手——两条 TLS 会话同时开,C3 的堆扛不住。
 static SemaphoreHandle_t s_http_lock;
+static int64_t s_net_active_start_us = 0;
+
+static void http_lock_take_internal(void) {
+    if (s_http_lock != NULL) {
+        xSemaphoreTake(s_http_lock, portMAX_DELAY);
+        s_net_active_start_us = esp_timer_get_time();
+    }
+}
+
+static void http_lock_give_internal(void) {
+    if (s_http_lock != NULL) {
+        if (s_net_active_start_us > 0) {
+            int64_t dur_us = esp_timer_get_time() - s_net_active_start_us;
+            if (dur_us > 0) {
+                app_power_track_wifi_active((uint32_t)(dur_us / 1000));
+            }
+            s_net_active_start_us = 0;
+        }
+        xSemaphoreGive(s_http_lock);
+    }
+}
 static app_detail_snapshot_t s_detail;
 static char s_detail_req_id[APP_MATCH_ID_MAX + 1];
 static volatile bool s_detail_pending;
@@ -370,7 +392,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
     if (client == NULL) return ESP_ERR_NO_MEM;
 
     // 详情任务可能正在握手:排队,别让两条 TLS 同时占堆。
-    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+    http_lock_take_internal();
 
     // 站点会校验 Referer,不带就返回 567 + 一段 HTML 错误页。
     esp_http_client_set_header(client, "Referer", APP_FEED_REFERER);
@@ -435,7 +457,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         esp_http_client_cleanup(client);
-        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        http_lock_give_internal();
         return err;
     }
 
@@ -449,7 +471,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
         ESP_LOGW(TAG, "%s HTTP %d", what, status);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        http_lock_give_internal();
         return ESP_FAIL;
     }
 
@@ -485,7 +507,7 @@ static esp_err_t fetch_stream(const char *url, app_match_list_t *out, int target
 
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+    http_lock_give_internal();
 
     if (err != ESP_OK) return err;
 
@@ -1101,7 +1123,7 @@ static bool detail_fetch(const char *match_id) {
     snprintf(url, sizeof(url), "%s%s", APP_DETAIL_URL, match_id);
 
     // 同一时刻只允许一个联网请求,免得两条 TLS 一起抢堆。
-    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+    http_lock_take_internal();
 
     bool ok = false;
     const char *why = "拉取失败";
@@ -1151,7 +1173,7 @@ static bool detail_fetch(const char *match_id) {
     // 兜底放在锁里算:详情里没队徽(未开赛)时要去翻 s_crest_refs。
     resolve_crest_urls(match_id, &parsed, logo_home, logo_away);
 
-    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+    http_lock_give_internal();
 
     if (ok) {
         ESP_LOGI(TAG, "详情 %s:进球 %u,统计 %u,队徽[%s]/[%s]",
@@ -1231,7 +1253,7 @@ int app_net_fetch_binary(const char *url, const char *referer,
     if (!s_sta_connected) return -2;
     const bool is_https = (strncmp(url, "https://", 8) == 0);
     if (is_https && !ensure_time_synced()) return -3;
-    if (s_http_lock != NULL) xSemaphoreTake(s_http_lock, portMAX_DELAY);
+    http_lock_take_internal();
 
     int got = -1;
     esp_http_client_config_t cfg = {
@@ -1244,7 +1266,7 @@ int app_net_fetch_binary(const char *url, const char *referer,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == NULL) {
-        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        http_lock_give_internal();
         return -4;
     }
     if (referer != NULL) esp_http_client_set_header(client, "Referer", referer);
@@ -1276,7 +1298,7 @@ int app_net_fetch_binary(const char *url, const char *referer,
         esp_http_client_close(client);
     }
     esp_http_client_cleanup(client);
-    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+    http_lock_give_internal();
     return got;
 }
 
@@ -1296,7 +1318,7 @@ int app_net_fetch_alloc(const char *url, const char *referer,
 
     char *buf = malloc(cap + 1);
     if (buf == NULL) {
-        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        http_lock_give_internal();
         return -5;
     }
 
@@ -1312,7 +1334,7 @@ int app_net_fetch_alloc(const char *url, const char *referer,
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == NULL) {
         free(buf);
-        if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+        http_lock_give_internal();
         return -4;
     }
     if (referer != NULL) esp_http_client_set_header(client, "Referer", referer);
@@ -1341,7 +1363,7 @@ int app_net_fetch_alloc(const char *url, const char *referer,
         esp_http_client_close(client);
     }
     esp_http_client_cleanup(client);
-    if (s_http_lock != NULL) xSemaphoreGive(s_http_lock);
+    http_lock_give_internal();
 
     if (got > 0) {
         *out_buf = buf;
@@ -1353,13 +1375,15 @@ int app_net_fetch_alloc(const char *url, const char *referer,
 
 bool app_net_http_lock_take(uint32_t timeout_ms) {
     if (s_http_lock == NULL) return false;
-    return (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+    if (xSemaphoreTake(s_http_lock, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        s_net_active_start_us = esp_timer_get_time();
+        return true;
+    }
+    return false;
 }
 
 void app_net_http_lock_give(void) {
-    if (s_http_lock != NULL) {
-        xSemaphoreGive(s_http_lock);
-    }
+    http_lock_give_internal();
 }
 
 // ---------------------------------------------------------------- 工作任务

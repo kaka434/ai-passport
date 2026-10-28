@@ -49,6 +49,7 @@ typedef enum {
     APP_PAGE_FAVORITE,       // 关注球队主队看板
     APP_PAGE_SETTINGS,
     APP_PAGE_STATUS,         // 系统状态二级页
+    APP_PAGE_POWER_DETAIL,  // 电池与功耗曲线三级页
     APP_PAGE_WIFI_LIST,
     APP_PAGE_WIFI_PASS,
     APP_PAGE_PORTAL,
