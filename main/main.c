@@ -56,7 +56,8 @@ static void screen_wake(void) {
     if (!s_screen_off) return;
     s_screen_off = false;
     bsp_display_backlight(s_brightness);
-    ESP_LOGI(TAG, "按键点亮屏幕");
+    app_net_set_screen_state(false);
+    ESP_LOGI(TAG, "按键点亮屏幕,已恢复网络轮询并请求立即刷新");
 }
 
 // 500 ms 一次的粗粒度检查:息屏是"几十秒"量级的事,不需要更细。
@@ -76,7 +77,8 @@ static void idle_task(void *arg) {
 
         s_screen_off = true;
         bsp_display_backlight(0);
-        ESP_LOGI(TAG, "无操作 %u 秒,息屏", (unsigned)off_seconds);
+        app_net_set_screen_state(true);
+        ESP_LOGI(TAG, "无操作 %u 秒,息屏(已挂起网络轮询)", (unsigned)off_seconds);
     }
 }
 
@@ -221,13 +223,74 @@ static void input_task(void *arg) {
 
 // ---------------------------------------------------------------- 电量
 
+#define BATT_SAMPLES_MAX 15
+typedef struct {
+    int soc;
+    int mv;
+    int64_t time_sec;
+} batt_sample_t;
+
+static batt_sample_t s_batt_samples[BATT_SAMPLES_MAX];
+static int s_batt_sample_count = 0;
+static float s_drain_rate = 0.0f;
+static int s_est_hours = -1;
+
 static void battery_task(void *arg) {
     (void)arg;
+    int log_counter = 0;
     for (;;) {
         // 读电量走共享 I2C,必须离开 LVGL 上下文;界面只负责显示。
         const int soc = bsp_battery_soc();
         const int mv = bsp_battery_mv();
         app_ui_set_battery(soc, mv);
+
+        if (soc >= 0 && mv > 2500) {
+            const int64_t now_sec = esp_timer_get_time() / 1000000LL;
+            // 存入滑动窗口采样队列
+            if (s_batt_sample_count < BATT_SAMPLES_MAX) {
+                s_batt_samples[s_batt_sample_count].soc = soc;
+                s_batt_samples[s_batt_sample_count].mv = mv;
+                s_batt_samples[s_batt_sample_count].time_sec = now_sec;
+                s_batt_sample_count++;
+            } else {
+                for (int i = 0; i < BATT_SAMPLES_MAX - 1; i++) {
+                    s_batt_samples[i] = s_batt_samples[i + 1];
+                }
+                s_batt_samples[BATT_SAMPLES_MAX - 1].soc = soc;
+                s_batt_samples[BATT_SAMPLES_MAX - 1].mv = mv;
+                s_batt_samples[BATT_SAMPLES_MAX - 1].time_sec = now_sec;
+            }
+
+            // 若样本积累超过 2 个且时间跨度超过 60 秒，计算掉电速率
+            if (s_batt_sample_count >= 2) {
+                const int64_t dt_sec = s_batt_samples[s_batt_sample_count - 1].time_sec - s_batt_samples[0].time_sec;
+                if (dt_sec >= 60) {
+                    const int d_soc = s_batt_samples[0].soc - s_batt_samples[s_batt_sample_count - 1].soc;
+                    const float dt_hours = (float)dt_sec / 3600.0f;
+                    if (d_soc >= 0) {
+                        s_drain_rate = (float)d_soc / dt_hours;
+                        if (s_drain_rate > 0.05f) {
+                            s_est_hours = (int)((float)soc / s_drain_rate);
+                        } else {
+                            s_est_hours = 99; // 几乎零耗电
+                        }
+                    } else {
+                        // 正在充电 (soc 增加)
+                        s_drain_rate = -1.0f;
+                        s_est_hours = -1;
+                    }
+                }
+            }
+            app_ui_set_power_stats(s_drain_rate, s_est_hours);
+
+            // 每 5 分钟 (10 次轮询) 输出一次能耗监控日志
+            if (++log_counter >= 10) {
+                log_counter = 0;
+                ESP_LOGI("PowerMonitor", "电池: %dmV (%d%%) | 掉电率: %.1f%%/h | 预估待机: %dh | 屏幕: %s | 策略: %s",
+                         mv, soc, s_drain_rate, s_est_hours, s_screen_off ? "息屏" : "亮屏", app_net_get_power_strategy());
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(BATTERY_POLL_MS));
     }
 }

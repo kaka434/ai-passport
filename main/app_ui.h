@@ -22,3 +22,4 @@ void app_ui_notify_config_changed(void);
 
 // 电池读数不可用时传 -1,界面显示 "--" 而不是 0%。mv 为电压毫伏。
 void app_ui_set_battery(int soc, int mv);
+void app_ui_set_power_stats(float drain_rate_per_hour, int est_hours);

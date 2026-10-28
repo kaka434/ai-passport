@@ -1376,6 +1376,70 @@ static uint32_t backoff(uint32_t ms) {
     return (ms * 2 > APP_RETRY_MAX_MS) ? APP_RETRY_MAX_MS : ms * 2;
 }
 
+static volatile bool s_screen_is_off = false;
+static char s_power_strategy_desc[32] = "正常轮询";
+
+void app_net_set_screen_state(bool is_screen_off) {
+    const bool was_off = s_screen_is_off;
+    s_screen_is_off = is_screen_off;
+    if (was_off && !is_screen_off) {
+        // 点亮屏幕瞬间唤醒网络任务发起一次强制刷新
+        app_net_request_refresh();
+    }
+}
+
+const char *app_net_get_power_strategy(void) {
+    return s_power_strategy_desc;
+}
+
+static uint32_t calculate_next_wait_ms(const app_config_t *cfg) {
+    // 1. 如果屏幕处于息屏状态: 挂起轮询(每 2 小时兜底校准一次, 期间按键点亮立刻唤醒)
+    if (s_screen_is_off) {
+        snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "息屏挂起");
+        return 2 * 3600 * 1000u;
+    }
+
+    // 2. 如果用户当前翻页看回看或看未来: 30 分钟刷新一次
+    if (s_view_day != 0) {
+        snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "非当天(30m)");
+        return 30 * 60 * 1000u;
+    }
+
+    // 3. 当天无比赛 (count == 0 或 day_offset != 0): 节流拉长至 2 小时
+    if (s_parsed.count == 0 || s_next_day != 0) {
+        snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "无比赛(2h)");
+        return 2 * 3600 * 1000u;
+    }
+
+    // 4. 当天有比赛: 检查是否处于比赛中 (LIVE)
+    bool has_live = false;
+    bool all_finished = true;
+    for (size_t i = 0; i < s_parsed.count; i++) {
+        if (app_match_is_live(s_parsed.items[i].state)) {
+            has_live = true;
+        }
+        if (s_parsed.items[i].state != APP_STATE_FULL_TIME) {
+            all_finished = false;
+        }
+    }
+
+    if (has_live) {
+        // 比赛中: 高频刷新 (如 60s/120s/300s)
+        snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "比赛中(%us)", (unsigned)cfg->refresh_seconds);
+        return (uint32_t)app_config_clamp_refresh(cfg->refresh_seconds) * 1000u;
+    }
+
+    if (all_finished) {
+        // 今天所有比赛已踢完: 拉长到 1 小时
+        snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "全完场(1h)");
+        return 3600 * 1000u;
+    }
+
+    // 还有未开始的比赛: 拉长到 15 分钟
+    snprintf(s_power_strategy_desc, sizeof(s_power_strategy_desc), "未开赛(15m)");
+    return 15 * 60 * 1000u;
+}
+
 static void net_task(void *arg) {
     (void)arg;
     uint32_t retry_ms = APP_RETRY_MIN_MS;
@@ -1446,8 +1510,8 @@ static void net_task(void *arg) {
         }
         retry_ms = APP_RETRY_MIN_MS;
 
-        // 睡到下一个刷新点,期间有手动刷新就提前醒。
-        const uint32_t wait_ms = (uint32_t)app_config_clamp_refresh(cfg.refresh_seconds) * 1000u;
+        // 自适应低功耗刷新策略: 当天无赛拉长至 2 小时, 息屏挂起, 有进行中比赛恢复高频
+        const uint32_t wait_ms = calculate_next_wait_ms(&cfg);
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
     }
 }

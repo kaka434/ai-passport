@@ -188,3 +188,7 @@ void app_net_detail_copy(app_detail_snapshot_t *out);
 
 // 详情版本号,界面用它判断要不要重画。
 uint32_t app_net_detail_revision(void);
+
+// ---------------------------------------------------------------- 低功耗与智能刷新策略
+void app_net_set_screen_state(bool is_screen_off);
+const char *app_net_get_power_strategy(void);

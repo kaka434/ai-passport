@@ -237,6 +237,8 @@ static app_snapshot_t s_snap;      // 界面自己的快照副本
 static uint32_t s_seen_revision;
 static int s_battery_soc = -1;
 static int s_battery_mv = -1;
+static float s_drain_rate = 0.0f;
+static int s_est_hours = -1;
 static bool s_config_dirty;
 
 // 设置页 8 行的句柄。翻行时只改这 8 行的颜色,不重建整页——重建一次要
@@ -1448,35 +1450,41 @@ static void build_status(void) {
         clipped_text(c2, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
     }
 
-    // 卡片 3: 电池与供电
+    // 卡片 3: 电池与功耗监控
     lv_obj_t *c3 = panel(s_body, 10, 108, SCR_W - 20, 48, C_PANEL, 8);
     if (c3 != NULL) {
-        clipped_text(c3, APP_FONT_BODY, C_TEXT, "电池与供电", 10, 5, 100, 18, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c3, APP_FONT_BODY, C_TEXT, "电池与功耗", 10, 5, 100, 18, LV_TEXT_ALIGN_LEFT);
 
-        char soc_str[24];
+        char soc_str[32];
         if (s_battery_soc < 0) {
             snprintf(soc_str, sizeof(soc_str), "--%%");
+        } else if (s_battery_mv > 0) {
+            snprintf(soc_str, sizeof(soc_str), "%d%% (%dmV)", s_battery_soc, s_battery_mv);
         } else {
             snprintf(soc_str, sizeof(soc_str), "%d%%", s_battery_soc);
         }
         clipped_text(c3, APP_FONT_SMALL,
                      (s_battery_soc > 20 || s_battery_soc < 0) ? C_ACCENT : C_LIVE,
-                     soc_str, 120, 6, 86, 16, LV_TEXT_ALIGN_RIGHT);
+                     soc_str, 100, 6, 106, 16, LV_TEXT_ALIGN_RIGHT);
 
         char line3[96];
-        if (s_battery_mv > 0) {
-            snprintf(line3, sizeof(line3), "电量计:CW2017  电压: %d mV", s_battery_mv);
+        if (s_drain_rate > 0.05f && s_est_hours > 0) {
+            snprintf(line3, sizeof(line3), "掉电: -%.1f%%/h (续航约%dh)", s_drain_rate, s_est_hours);
+        } else if (s_drain_rate < -0.05f) {
+            snprintf(line3, sizeof(line3), "正在充电中 (USB供电)");
+        } else if (s_battery_mv > 0) {
+            snprintf(line3, sizeof(line3), "电压: %dmV · 功耗测算中…", s_battery_mv);
         } else {
-            snprintf(line3, sizeof(line3), "电量计:CW2017 (USB供电/检测中)");
+            snprintf(line3, sizeof(line3), "电量计:CW2017 (USB检测中)");
         }
         app_fonts_sanitize(line3, s_clean, sizeof(s_clean));
         clipped_text(c3, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
     }
 
-    // 卡片 4: 设备运行状态
+    // 卡片 4: 设备与刷新策略
     lv_obj_t *c4 = panel(s_body, 10, 160, SCR_W - 20, 48, C_PANEL, 8);
     if (c4 != NULL) {
-        clipped_text(c4, APP_FONT_BODY, C_TEXT, "设备状态", 10, 5, 90, 18, LV_TEXT_ALIGN_LEFT);
+        clipped_text(c4, APP_FONT_BODY, C_TEXT, "设备与策略", 10, 5, 90, 18, LV_TEXT_ALIGN_LEFT);
 
         uint32_t free_heap = esp_get_free_heap_size() / 1024;
         char heap_str[24];
@@ -1489,8 +1497,8 @@ static void build_status(void) {
         int up_s = (int)(uptime_sec % 60);
 
         char line4[96];
-        snprintf(line4, sizeof(line4), "已运行 %02d:%02d:%02d  刷新周期:%us",
-                 up_h, up_m, up_s, (unsigned)s_cfg.refresh_seconds);
+        snprintf(line4, sizeof(line4), "运行 %02d:%02d:%02d  策略:%s",
+                 up_h, up_m, up_s, app_net_get_power_strategy());
         app_fonts_sanitize(line4, s_clean, sizeof(s_clean));
         clipped_text(c4, APP_FONT_SMALL, C_MUTED, s_clean, 10, 26, 200, 16, LV_TEXT_ALIGN_LEFT);
     }
@@ -2356,6 +2364,11 @@ void app_ui_set_battery(int soc, int mv) {
     s_battery_mv = mv;
     update_header();
     bsp_lvgl_unlock();
+}
+
+void app_ui_set_power_stats(float drain_rate_per_hour, int est_hours) {
+    s_drain_rate = drain_rate_per_hour;
+    s_est_hours = est_hours;
 }
 
 void app_ui_init(void) {
